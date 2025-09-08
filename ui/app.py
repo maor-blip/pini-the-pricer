@@ -2,7 +2,8 @@
 import os, requests, json
 import streamlit as st
 
-API_URL = os.getenv("PRICER_API_URL", "http://localhost:8000")
+API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
+
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="centered")
 # ---- Simple password gate ----
@@ -47,7 +48,41 @@ if submitted:
     payload = {"kpis": int(kpis), "channels": int(channels), "countries": int(countries), "users": int(users)}
     if license_choice != "(auto)":
         payload["license"] = license_choice
-        resp = requests.post(f"{API_URL}/quote", json=payload, timeout=30).json()
+def post_json(url, payload):
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        # Render free tier may cold start. Be patient for a sec if 502/503.
+        r.raise_for_status()
+        # Make sure it is JSON. If not, show raw text to debug.
+        try:
+            return r.json()
+        except Exception:
+            st.error("API returned non-JSON response")
+            st.code(r.text)
+            st.stop()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}")
+        st.stop()
+
+# use it
+def post_json(url, payload):
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        # Render free tier may cold start. Be patient for a sec if 502/503.
+        r.raise_for_status()
+        # Make sure it is JSON. If not, show raw text to debug.
+        try:
+            return r.json()
+        except Exception:
+            st.error("API returned non-JSON response")
+            st.code(r.text)
+            st.stop()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}")
+        st.stop()
+
+# use it
+resp = post_json(f"{API_URL}/quote", payload)
         st.subheader(f"License: {resp['license']} — Version {resp['version']}")
         st.metric("Total Monthly (USD)", f"${resp['total_monthly']:,}")
         st.write(f"License discount: {resp['license_discount_pct']*100:.0f}% → -${resp['license_discount_amount']:,}")
@@ -58,7 +93,41 @@ if submitted:
                 st.json(it["progressive_breakdown"])
         st.caption("No taxes. Currency USD.")
     else:
-        resp = requests.post(f"{API_URL}/quote", json=payload, timeout=30).json()
+def post_json(url, payload):
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        # Render free tier may cold start. Be patient for a sec if 502/503.
+        r.raise_for_status()
+        # Make sure it is JSON. If not, show raw text to debug.
+        try:
+            return r.json()
+        except Exception:
+            st.error("API returned non-JSON response")
+            st.code(r.text)
+            st.stop()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}")
+        st.stop()
+
+# use it
+def post_json(url, payload):
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        # Render free tier may cold start. Be patient for a sec if 502/503.
+        r.raise_for_status()
+        # Make sure it is JSON. If not, show raw text to debug.
+        try:
+            return r.json()
+        except Exception:
+            st.error("API returned non-JSON response")
+            st.code(r.text)
+            st.stop()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}")
+        st.stop()
+
+# use it
+resp = post_json(f"{API_URL}/quote", payload)
         st.subheader(f"Recommended: {resp['recommended']}")
         best = resp["quotes"][resp["recommended"]]
         st.metric("Total Monthly (USD)", f"${best['total_monthly']:,}")
