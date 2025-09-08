@@ -5,6 +5,26 @@ import streamlit as st
 API_URL = os.getenv("PRICER_API_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="centered")
+# ---- Simple password gate ----
+def require_password():
+    import streamlit as st
+    app_pw = st.secrets.get("APP_PASSWORD")
+    if not app_pw:
+        st.stop()  # no password set - refuse to load
+
+    if not st.session_state.get("auth_ok", False):
+        st.title("Pini the Pricer")
+        pwd = st.text_input("Enter password", type="password")
+        if st.button("Enter"):
+            if pwd == app_pw:
+                st.session_state["auth_ok"] = True
+                st.experimental_rerun()
+            else:
+                st.error("Wrong password")
+        st.stop()
+
+require_password()
+# ---- end password gate ----
 
 st.markdown('''
 <div style="display:flex;align-items:center;gap:12px;">
