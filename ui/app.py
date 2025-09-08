@@ -18,7 +18,7 @@ def require_password():
         if st.button("Enter"):
             if pwd == app_pw:
                 st.session_state["auth_ok"] = True
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Wrong password")
         st.stop()
@@ -103,4 +103,4 @@ if submitted:
 # Sidebar logout
 if st.sidebar.button("Log out"):
     st.session_state["auth_ok"] = False
-    st.experimental_rerun()
+    st.rerun()
