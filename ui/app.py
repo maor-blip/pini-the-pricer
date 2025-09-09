@@ -1,31 +1,51 @@
 import os, json, time, urllib.parse
 import requests
 import streamlit as st
-from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 from openai import OpenAI, RateLimitError, APIError
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
-# ------------ Config from secrets ------------
+# ------------ Config from secrets (fail closed if missing) ------------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-GOOGLE_CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
-GOOGLE_CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
-ALLOWED_DOMAIN = st.secrets.get("ALLOWED_DOMAIN", "incrmntal.com")
-APP_URL = st.secrets["APP_URL"].rstrip("/")
+GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
+ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
+APP_URL = (st.secrets.get("APP_URL") or "").rstrip("/")
+
+# Hard assertions so we never render UI without auth configured
+if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
+    st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
+    st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
-# ------------ Google Workspace login ------------
+# ---- Hard logout handler (runs before auth) ----
+def handle_forced_logout():
+    raw = dict(st.query_params)
+    if raw.get("logout") == "1":
+        st.session_state.pop("user", None)
+        try:
+            st.cache_data.clear()
+            st.cache_resource.clear()
+        except Exception:
+            pass
+        st.query_params.clear()
+        st.success("Logged out. Please sign in again.")
+        st.stop()
+handle_forced_logout()
+
+# ------------ Google Workspace login (hard gate) ------------
 def require_google_login():
-    # already signed in
+    # If already signed in, continue
     if st.session_state.get("user"):
         return
 
-    # inline client config
+    # Build OAuth flow
     client_config = {
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
@@ -42,22 +62,20 @@ def require_google_login():
         redirect_uri=APP_URL,
     )
 
-    # use st.query_params (new API)
+    # If Google redirected back with ?code=...
     raw_params = dict(st.query_params)
     if "code" in raw_params:
-        # Flatten any list values
         flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
         qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
 
-        # Diagnostic wrapper - shows the real Google OAuth error
         try:
             flow.fetch_token(authorization_response=authorization_response)
         except OAuth2Error as e:
             err = getattr(e, "error", "oauth_error")
             desc = getattr(e, "description", "")
             st.error(f"Google OAuth failed: {err} - {desc}")
-            st.info("Likely causes: redirect_uri mismatch, wrong client secret, consent screen not Internal or not a Test user, or the code was already used.")
+            st.info("Check: redirect URI matches APP_URL exactly, client ID/secret valid, consent screen, or stale code reuse.")
             st.stop()
         except Exception as e:
             st.error(f"Token exchange failed: {e}")
@@ -67,11 +85,11 @@ def require_google_login():
         info = id_token.verify_oauth2_token(
             creds._id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
-        email = info.get("email", "")
-        hosted_domain = info.get("hd", "")
+        email = (info.get("email") or "").strip().lower()
+        hosted_domain = (info.get("hd") or "").strip().lower()
 
-        # Enforce Workspace domain
-        if (hosted_domain and hosted_domain.lower() != ALLOWED_DOMAIN.lower()) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
+        # Enforce domain
+        if (hosted_domain and hosted_domain != ALLOWED_DOMAIN) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
             st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
             st.stop()
 
@@ -81,11 +99,11 @@ def require_google_login():
             "picture": info.get("picture", ""),
         }
 
-        # Clean query string and reload
+        # Clean query params and rerun a fresh session
         st.query_params.clear()
         st.rerun()
 
-    # not signed in yet
+    # Not signed in yet - show Google button and stop
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -95,6 +113,9 @@ def require_google_login():
     st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
     st.link_button("Continue with Google", auth_url)
     st.stop()
+
+# Call the gate BEFORE any UI
+require_google_login()
 # ------------ end Google login ------------
 
 # ------------ Helpers ------------
@@ -137,14 +158,10 @@ def chat_with_playbook(messages):
             return resp.choices[0].message.content
         except (RateLimitError, APIError) as e:
             if attempt < max_retries - 1:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            st.error(f"OpenAI error: {e}")
-            st.stop()
+                time.sleep(backoff); backoff *= 2; continue
+            st.error(f"OpenAI error: {e}"); st.stop()
         except Exception as e:
-            st.error(f"Unexpected error: {e}")
-            st.stop()
+            st.error(f"Unexpected error: {e}"); st.stop()
 
 # ------------ Header ------------
 user = st.session_state.get("user", {})
@@ -229,8 +246,7 @@ with tab2:
     colA, colB = st.columns(2)
     with colA:
         if st.button("Insert latest quote into chat"):
-            q = st.session_state.get("last_quote")
-            inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
             if not q or not inp:
                 st.warning("No quote yet. Go to the Quote tab, generate a quote, then try again.")
             else:
@@ -245,8 +261,7 @@ with tab2:
                 st.rerun()
     with colB:
         if st.button("Create proposal draft"):
-            q = st.session_state.get("last_quote")
-            inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
             if not client:
                 st.error("Missing OPENAI_API_KEY in secrets")
             elif not q or not inp:
@@ -285,9 +300,8 @@ with tab2:
         st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
 
 # ------------ Sidebar ------------
-if st.sidebar.button("Log out"):
-    st.session_state.pop("user", None)
-    try:
-        st.query_params.clear()
-    finally:
+with st.sidebar:
+    st.write(f"Signed in as: {user.get('email','') or 'unknown'}")
+    if st.button("Log out"):
+        st.query_params["logout"] = "1"
         st.rerun()
