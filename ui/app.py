@@ -41,14 +41,13 @@ def require_google_login():
         redirect_uri=APP_URL,
     )
 
-    # --- use st.query_params (new API) ---
+    # use st.query_params (new API)
     raw_params = dict(st.query_params)
-        if "code" in raw_params:
-            # Flatten any list values (Streamlit may return lists)
-            flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
-            qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
-            authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
-
+    if "code" in raw_params:
+        # Flatten any list values
+        flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
+        qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
+        authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
 
         flow.fetch_token(authorization_response=authorization_response)
         creds = flow.credentials
@@ -58,7 +57,10 @@ def require_google_login():
         )
         email = info.get("email", "")
         hosted_domain = info.get("hd", "")
+
+        # Enforce Workspace domain
         if (hosted_domain and hosted_domain.lower() != ALLOWED_DOMAIN.lower()) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
+            st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
             st.stop()
 
         st.session_state["user"] = {
@@ -67,7 +69,7 @@ def require_google_login():
             "picture": info.get("picture", ""),
         }
 
-        # clean query string and reload using new API
+        # Clean query string and reload
         st.query_params.clear()
         st.rerun()
 
@@ -81,6 +83,8 @@ def require_google_login():
     st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
     st.link_button("Continue with Google", auth_url)
     st.stop()
+
+require_google_login()
 # ------------ end Google login ------------
 
 # ------------ Helpers ------------
@@ -123,10 +127,14 @@ def chat_with_playbook(messages):
             return resp.choices[0].message.content
         except (RateLimitError, APIError) as e:
             if attempt < max_retries - 1:
-                time.sleep(backoff); backoff *= 2; continue
-            st.error(f"OpenAI error: {e}"); st.stop()
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            st.error(f"OpenAI error: {e}")
+            st.stop()
         except Exception as e:
-            st.error(f"Unexpected error: {e}"); st.stop()
+            st.error(f"Unexpected error: {e}")
+            st.stop()
 
 # ------------ Header ------------
 user = st.session_state.get("user", {})
@@ -211,7 +219,8 @@ with tab2:
     colA, colB = st.columns(2)
     with colA:
         if st.button("Insert latest quote into chat"):
-            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote")
+            inp = st.session_state.get("last_inputs")
             if not q or not inp:
                 st.warning("No quote yet. Go to the Quote tab, generate a quote, then try again.")
             else:
@@ -226,7 +235,8 @@ with tab2:
                 st.rerun()
     with colB:
         if st.button("Create proposal draft"):
-            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote")
+            inp = st.session_state.get("last_inputs")
             if not client:
                 st.error("Missing OPENAI_API_KEY in secrets")
             elif not q or not inp:
@@ -271,4 +281,3 @@ if st.sidebar.button("Log out"):
         st.query_params.clear()
     finally:
         st.rerun()
-
