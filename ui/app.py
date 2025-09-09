@@ -42,14 +42,13 @@ def require_google_login():
     )
 
     # --- use st.query_params (new API) ---
-    params = st.query_params
-    if "code" in params:
-        # rebuild full callback URL including query string
-        if len(params):
-            qs = urllib.parse.urlencode(params, doseq=True)
-            authorization_response = f"{APP_URL}?{qs}"
-        else:
-            authorization_response = APP_URL
+    raw_params = dict(st.query_params)
+        if "code" in raw_params:
+            # Flatten any list values (Streamlit may return lists)
+            flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
+            qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
+            authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
+
 
         flow.fetch_token(authorization_response=authorization_response)
         creds = flow.credentials
@@ -58,8 +57,8 @@ def require_google_login():
             creds._id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
         email = info.get("email", "")
-        if not email.endswith(f"@{ALLOWED_DOMAIN}"):
-            st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
+        hosted_domain = info.get("hd", "")
+        if (hosted_domain and hosted_domain.lower() != ALLOWED_DOMAIN.lower()) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
             st.stop()
 
         st.session_state["user"] = {
@@ -268,4 +267,8 @@ with tab2:
 # ------------ Sidebar ------------
 if st.sidebar.button("Log out"):
     st.session_state.pop("user", None)
-    st.rerun()
+    try:
+        st.query_params.clear()
+    finally:
+        st.rerun()
+
