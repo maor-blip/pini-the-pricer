@@ -56,11 +56,17 @@ def require_google_login():
             "javascript_origins": [APP_URL],
         }
     }
-    flow = Flow.from_client_config(
-        client_config,
-        scopes=["openid", "email", "profile"],
-        redirect_uri=APP_URL,
-    )
+   OAUTH_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
+flow = Flow.from_client_config(
+    client_config,
+    scopes=OAUTH_SCOPES,
+    redirect_uri=APP_URL,
+)
+
 
     # If Google redirected back with ?code=...
     raw_params = dict(st.query_params)
