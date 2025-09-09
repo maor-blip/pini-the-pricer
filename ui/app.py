@@ -1,45 +1,96 @@
-import os, json, time
+import os, json, time, urllib.parse
 import requests
 import streamlit as st
 from openai import OpenAI, RateLimitError, APIError
+from google_auth_oauthlib.flow import Flow
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
-# Read config from Streamlit Secrets first, then env fallback
+# ------------ Config from secrets ------------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+GOOGLE_CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+GOOGLE_CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+ALLOWED_DOMAIN = st.secrets.get("ALLOWED_DOMAIN", "incrmntal.com")
+APP_URL = st.secrets["APP_URL"].rstrip("/")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
-# ---------- Password gate ----------
-def require_password():
-    app_pw = st.secrets.get("APP_PASSWORD")
-    if not app_pw:
-        st.stop()  # refuse to load if password not set
-    if not st.session_state.get("auth_ok", False):
-        st.title("Pini the Pricer")
-        pwd = st.text_input("Enter password", type="password")
-        if st.button("Enter"):
-            if pwd == app_pw:
-                st.session_state["auth_ok"] = True
-                st.rerun()
-            else:
-                st.error("Wrong password")
+# ------------ Google Workspace login ------------
+def require_google_login():
+    # already signed in
+    if st.session_state.get("user"):
+        return
+
+    # inline client config
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [APP_URL],
+            "javascript_origins": [APP_URL],
+        }
+    }
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=["openid", "email", "profile"],
+        redirect_uri=APP_URL,
+    )
+
+    # if Google sent us back with ?code=...
+    params = st.experimental_get_query_params()
+    if "code" in params:
+        authorization_response = APP_URL
+        if params:
+            authorization_response += "?" + urllib.parse.urlencode(params, doseq=True)
+
+        flow.fetch_token(authorization_response=authorization_response)
+        creds = flow.credentials
+
+        info = id_token.verify_oauth2_token(
+            creds._id_token, google_requests.Request(), GOOGLE_CLIENT_ID
+        )
+        email = info.get("email", "")
+        if not email.endswith(f"@{ALLOWED_DOMAIN}"):
+            st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
+            st.stop()
+
+        st.session_state["user"] = {
+            "email": email,
+            "name": info.get("name", ""),
+            "picture": info.get("picture", ""),
+        }
+
+        # clean query string and reload
+        st.markdown(f"<meta http-equiv='refresh' content='0; url={APP_URL}'>", unsafe_allow_html=True)
         st.stop()
 
-require_password()
-# ---------- end password gate ----------
+    # not signed in yet
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    st.title("Pini the Pricer")
+    st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
+    st.link_button("Continue with Google", auth_url)
+    st.stop()
 
-# ---------- Helpers ----------
+require_google_login()
+# ------------ end Google login ------------
+
+# ------------ Helpers ------------
 def money(x, decimals: int = 0) -> str:
-    """Format a number as USD with commas and rounding."""
     try:
         return f"${float(x):,.{decimals}f}"
     except Exception:
         return str(x)
 
 def post_json(url, payload, retries=2):
-    """POST JSON with a tiny retry to smooth over cold starts."""
     for attempt in range(retries + 1):
         try:
             r = requests.post(url, json=payload, timeout=60)
@@ -58,12 +109,10 @@ def post_json(url, payload, retries=2):
             st.stop()
 
 def chat_with_playbook(messages):
-    """Call OpenAI with backoff so rate limits do not crash the app."""
     if not client:
         st.error("Missing OPENAI_API_KEY in secrets")
         st.stop()
-    max_retries = 4
-    backoff = 2
+    max_retries, backoff = 4, 2
     for attempt in range(max_retries):
         try:
             resp = client.chat.completions.create(
@@ -72,36 +121,27 @@ def chat_with_playbook(messages):
                 messages=messages,
             )
             return resp.choices[0].message.content
-        except RateLimitError:
+        except (RateLimitError, APIError) as e:
             if attempt < max_retries - 1:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            st.error("Hit the OpenAI rate limit. Try again in a moment.")
-            st.stop()
-        except APIError as e:
-            if attempt < max_retries - 1:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            st.error(f"OpenAI API error: {e}")
-            st.stop()
+                time.sleep(backoff); backoff *= 2; continue
+            st.error(f"OpenAI error: {e}"); st.stop()
         except Exception as e:
-            st.error(f"Unexpected error: {e}")
-            st.stop()
+            st.error(f"Unexpected error: {e}"); st.stop()
 
-# ---------- Header ----------
-st.markdown("""
+# ------------ Header ------------
+user = st.session_state.get("user", {})
+st.markdown(f"""
 <div style="display:flex;align-items:center;gap:12px;">
   <h2 style="margin:0;">Pini the Pricer</h2>
+  <div style="font-size:0.9rem;opacity:0.8;">{user.get('email','')}</div>
 </div>
 """, unsafe_allow_html=True)
 st.caption(f"API: {API_URL}")
 
-# ---------- Tabs ----------
+# ------------ Tabs ------------
 tab1, tab2 = st.tabs(["Quote", "Sales assistant"])
 
-# ---------- Tab 1: Quote ----------
+# ------------ Tab 1: Quote ------------
 with tab1:
     st.subheader("Get a price quote")
     with st.form("inputs", clear_on_submit=False):
@@ -119,12 +159,7 @@ with tab1:
         submitted = st.form_submit_button("Get quote")
 
     if submitted:
-        payload = {
-            "kpis": int(kpis),
-            "channels": int(channels),
-            "countries": int(countries),
-            "users": int(users)
-        }
+        payload = {"kpis": int(kpis), "channels": int(channels), "countries": int(countries), "users": int(users)}
 
         if license_choice != "(auto)":
             payload["license"] = license_choice
@@ -136,19 +171,14 @@ with tab1:
             st.metric("Annual (USD)", money(resp['total_annual']))
             st.divider()
             for it in resp["items"]:
-                with st.expander(
-                    f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"
-                ):
+                with st.expander(f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"):
                     st.json(it["progressive_breakdown"])
             st.caption("No taxes. Currency USD.")
-
-            # store latest for assistant tab
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = resp
 
         else:
             resp = post_json(f"{API_URL}/quote", payload)
-
             st.subheader(f"Recommended: {resp['recommended']}")
             best = resp["quotes"][resp['recommended']]
             st.metric("Total Monthly (USD)", money(best['total_monthly']))
@@ -158,42 +188,30 @@ with tab1:
             for name, q in resp["quotes"].items():
                 st.write(f"### {name} - {money(q['total_monthly'])}/mo")
                 for it in q["items"]:
-                    st.write(
-                        f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}"
-                    )
+                    st.write(f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}")
             st.caption("No taxes. Currency USD.")
-
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = best
 
-# ---------- Tab 2: Sales assistant ----------
+# ------------ Tab 2: Sales assistant ------------
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
         st.session_state["chat"] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the INCRMNTAL Sales Playbook. Be concise and practical. "
-                    "Tone - direct, helpful, confident. "
-                    "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
-                    "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote."
-                )
-            }
-        ]
+            {"role": "system",
+             "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
+                         "Tone - direct, helpful, confident. "
+                         "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
+                         "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote.")}]
 
-    # show history
     for m in st.session_state["chat"]:
-        if m["role"] == "system":
-            continue
-        st.chat_message(m["role"]).write(m["content"])
+        if m["role"] != "system":
+            st.chat_message(m["role"]).write(m["content"])
 
-    # utilities
     colA, colB = st.columns(2)
     with colA:
         if st.button("Insert latest quote into chat"):
-            q = st.session_state.get("last_quote")
-            inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
             if not q or not inp:
                 st.warning("No quote yet. Go to the Quote tab, generate a quote, then try again.")
             else:
@@ -208,14 +226,12 @@ with tab2:
                 st.rerun()
     with colB:
         if st.button("Create proposal draft"):
-            q = st.session_state.get("last_quote")
-            inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
             if not client:
                 st.error("Missing OPENAI_API_KEY in secrets")
             elif not q or not inp:
                 st.warning("No quote yet. Generate a quote first.")
             else:
-                # Build a compact, rounded pricing blurb for the model
                 pricing_blurb = (
                     f"License: {q.get('license','recommended')}\n"
                     f"Total monthly: {money(q.get('total_monthly'))}\n"
@@ -236,7 +252,6 @@ with tab2:
                 st.session_state["proposal_md"] = content
                 st.success("Proposal draft ready below.")
 
-    # chat input
     user_msg = st.chat_input("Ask anything - pricing, objections, next steps")
     if user_msg:
         st.session_state["chat"].append({"role": "user", "content": user_msg})
@@ -244,18 +259,12 @@ with tab2:
         st.session_state["chat"].append({"role": "assistant", "content": reply})
         st.rerun()
 
-    # proposal output
     if st.session_state.get("proposal_md"):
         st.markdown("### Proposal draft")
         st.markdown(st.session_state["proposal_md"])
-        st.download_button(
-            "Download proposal.md",
-            st.session_state["proposal_md"].encode("utf-8"),
-            "proposal.md",
-            "text/markdown"
-        )
+        st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
 
-# ---------- Sidebar ----------
+# ------------ Sidebar ------------
 if st.sidebar.button("Log out"):
-    st.session_state["auth_ok"] = False
+    st.session_state.pop("user", None)
     st.rerun()
