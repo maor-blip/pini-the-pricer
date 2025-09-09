@@ -5,3 +5,5 @@ pyyaml
 streamlit
 requests
 openai
+google-auth
+google-auth-oauthlib
