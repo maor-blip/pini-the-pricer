@@ -31,6 +31,13 @@ require_password()
 # ---------- end password gate ----------
 
 # ---------- Helpers ----------
+def money(x, decimals: int = 0) -> str:
+    """Format a number as USD with commas and rounding."""
+    try:
+        return f"${float(x):,.{decimals}f}"
+    except Exception:
+        return str(x)
+
 def post_json(url, payload, retries=2):
     """POST JSON with a tiny retry to smooth over cold starts."""
     for attempt in range(retries + 1):
@@ -124,13 +131,13 @@ with tab1:
             resp = post_json(f"{API_URL}/quote", payload)
 
             st.subheader(f"License: {resp['license']} - Version {resp['version']}")
-            st.metric("Total Monthly (USD)", f"${resp['total_monthly']:,}")
-            st.write(f"License discount: {resp.get('license_discount_pct', 0)*100:.0f}% -> -${resp.get('license_discount_amount', 0):,}")
-            st.metric("Annual (USD)", f"${resp['total_annual']:,}")
+            st.metric("Total Monthly (USD)", money(resp['total_monthly']))
+            st.write(f"License discount: {int(round(resp.get('license_discount_pct', 0)*100))}% -> -{money(resp.get('license_discount_amount', 0))}")
+            st.metric("Annual (USD)", money(resp['total_annual']))
             st.divider()
             for it in resp["items"]:
                 with st.expander(
-                    f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line ${it['line_total']:,}"
+                    f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"
                 ):
                     st.json(it["progressive_breakdown"])
             st.caption("No taxes. Currency USD.")
@@ -144,15 +151,15 @@ with tab1:
 
             st.subheader(f"Recommended: {resp['recommended']}")
             best = resp["quotes"][resp['recommended']]
-            st.metric("Total Monthly (USD)", f"${best['total_monthly']:,}")
-            st.write(f"License discount: {best.get('license_discount_pct', 0)*100:.0f}% -> -${best.get('license_discount_amount', 0):,}")
-            st.metric("Annual (USD)", f"${best['total_annual']:,}")
+            st.metric("Total Monthly (USD)", money(best['total_monthly']))
+            st.write(f"License discount: {int(round(best.get('license_discount_pct', 0)*100))}% -> -{money(best.get('license_discount_amount', 0))}")
+            st.metric("Annual (USD)", money(best['total_annual']))
             st.divider()
             for name, q in resp["quotes"].items():
-                st.write(f"### {name} - ${q['total_monthly']:,}/mo")
+                st.write(f"### {name} - {money(q['total_monthly'])}/mo")
                 for it in q["items"]:
                     st.write(
-                        f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> ${it['line_total']:,}"
+                        f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}"
                     )
             st.caption("No taxes. Currency USD.")
 
@@ -194,8 +201,8 @@ with tab2:
                     "Latest quote summary:",
                     f"- Inputs: KPIs {inp.get('kpis')}, Channels {inp.get('channels')}, Countries {inp.get('countries')}, Users {inp.get('users')}",
                     f"- License: {q.get('license','recommended')}",
-                    f"- Total monthly: ${q.get('total_monthly'):,}",
-                    f"- Total annual: ${q.get('total_annual'):,}",
+                    f"- Total monthly: {money(q.get('total_monthly'))}",
+                    f"- Total annual: {money(q.get('total_annual'))}",
                 ]
                 st.session_state["chat"].append({"role": "user", "content": "\n".join(lines)})
                 st.rerun()
@@ -208,13 +215,19 @@ with tab2:
             elif not q or not inp:
                 st.warning("No quote yet. Generate a quote first.")
             else:
+                # Build a compact, rounded pricing blurb for the model
+                pricing_blurb = (
+                    f"License: {q.get('license','recommended')}\n"
+                    f"Total monthly: {money(q.get('total_monthly'))}\n"
+                    f"Total annual: {money(q.get('total_annual'))}\n"
+                )
                 prompt = (
                     "Write a concise proposal for INCRMNTAL.\n"
                     "Audience - senior marketing decision maker.\n"
                     "Sections: Summary, Package and pricing, What you get, Why INCRMNTAL, Next steps.\n"
                     "Use short paragraphs and bullets. No fluff.\n"
-                    f"Pricing context: {json.dumps(q)}\n"
-                    "State prices in USD monthly and annual as provided. Do not invent features we did not quote."
+                    f"Pricing context:\n{pricing_blurb}\n"
+                    "State prices in USD monthly and annual exactly as provided above."
                 )
                 content = chat_with_playbook([
                     {"role": "system", "content": "You write clean, concise sales proposals for INCRMNTAL. Short bullets and straight talk."},
