@@ -1,6 +1,7 @@
 import os, json, time, urllib.parse
 import requests
 import streamlit as st
+from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 from openai import OpenAI, RateLimitError, APIError
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
@@ -49,9 +50,20 @@ def require_google_login():
         qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
 
-        flow.fetch_token(authorization_response=authorization_response)
-        creds = flow.credentials
+        # Diagnostic wrapper - shows the real Google OAuth error
+        try:
+            flow.fetch_token(authorization_response=authorization_response)
+        except OAuth2Error as e:
+            err = getattr(e, "error", "oauth_error")
+            desc = getattr(e, "description", "")
+            st.error(f"Google OAuth failed: {err} - {desc}")
+            st.info("Likely causes: redirect_uri mismatch, wrong client secret, consent screen not Internal or not a Test user, or the code was already used.")
+            st.stop()
+        except Exception as e:
+            st.error(f"Token exchange failed: {e}")
+            st.stop()
 
+        creds = flow.credentials
         info = id_token.verify_oauth2_token(
             creds._id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
@@ -83,8 +95,6 @@ def require_google_login():
     st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
     st.link_button("Continue with Google", auth_url)
     st.stop()
-
-require_google_login()
 # ------------ end Google login ------------
 
 # ------------ Helpers ------------
