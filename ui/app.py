@@ -174,13 +174,25 @@ def chat_with_playbook(messages):
             st.error(f"Unexpected error: {e}"); st.stop()
 
 # ========== Header ==========
+IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
+
 user = st.session_state.get("user", {})
+
 st.markdown(f"""
-<div style="display:flex;align-items:center;gap:12px;">
-  <h2 style="margin:0;">Pini the Pricer</h2>
-  <div style="font-size:0.9rem;opacity:0.8;">{user.get('email','')}</div>
+<div style="
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:4px 0 8px 0;
+">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <h2 style="margin:0;">Pini the Pricer</h2>
+    <div style="font-size:0.9rem; opacity:0.8;">{user.get('email','')}</div>
+  </div>
+  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:40px; max-height:40px; object-fit:contain;" />
 </div>
 """, unsafe_allow_html=True)
+
 st.caption(f"API: {API_URL}")
 
 # ========== Tabs ==========
