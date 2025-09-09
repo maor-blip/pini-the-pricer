@@ -41,12 +41,15 @@ def require_google_login():
         redirect_uri=APP_URL,
     )
 
-    # if Google sent us back with ?code=...
-    params = st.experimental_get_query_params()
+    # --- use st.query_params (new API) ---
+    params = st.query_params
     if "code" in params:
-        authorization_response = APP_URL
-        if params:
-            authorization_response += "?" + urllib.parse.urlencode(params, doseq=True)
+        # rebuild full callback URL including query string
+        if len(params):
+            qs = urllib.parse.urlencode(params, doseq=True)
+            authorization_response = f"{APP_URL}?{qs}"
+        else:
+            authorization_response = APP_URL
 
         flow.fetch_token(authorization_response=authorization_response)
         creds = flow.credentials
@@ -65,9 +68,9 @@ def require_google_login():
             "picture": info.get("picture", ""),
         }
 
-        # clean query string and reload
-        st.markdown(f"<meta http-equiv='refresh' content='0; url={APP_URL}'>", unsafe_allow_html=True)
-        st.stop()
+        # clean query string and reload using new API
+        st.query_params.clear()
+        st.rerun()
 
     # not signed in yet
     auth_url, _ = flow.authorization_url(
@@ -79,8 +82,6 @@ def require_google_login():
     st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
     st.link_button("Continue with Google", auth_url)
     st.stop()
-
-require_google_login()
 # ------------ end Google login ------------
 
 # ------------ Helpers ------------
