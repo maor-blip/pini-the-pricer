@@ -7,7 +7,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
-# ------------ Config from secrets (fail closed if missing) ------------
+# ========== Config from secrets (fail closed if missing) ==========
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
@@ -19,6 +19,13 @@ APP_URL = (st.secrets.get("APP_URL") or "").rstrip("/")
 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
     st.stop()
+
+# Long-form scopes to match what Google returns
+OAUTH_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -37,9 +44,10 @@ def handle_forced_logout():
         st.query_params.clear()
         st.success("Logged out. Please sign in again.")
         st.stop()
+
 handle_forced_logout()
 
-# ------------ Google Workspace login (hard gate) ------------
+# ========== Google Workspace login (hard gate) ==========
 def require_google_login():
     # If already signed in, continue
     if st.session_state.get("user"):
@@ -56,24 +64,17 @@ def require_google_login():
             "javascript_origins": [APP_URL],
         }
     }
-    # Define OAuth scopes at the top level of the file (same indent as imports)
-OAUTH_SCOPES = [
-    "openid",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile",
-    ]
 
-flow = Flow.from_client_config(
-    client_config,
-    scopes=OAUTH_SCOPES,
-    redirect_uri=APP_URL,
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=OAUTH_SCOPES,
+        redirect_uri=APP_URL,
     )
-
-
 
     # If Google redirected back with ?code=...
     raw_params = dict(st.query_params)
     if "code" in raw_params:
+        # Flatten any list values
         flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
         qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
@@ -125,9 +126,9 @@ flow = Flow.from_client_config(
 
 # Call the gate BEFORE any UI
 require_google_login()
-# ------------ end Google login ------------
+# ========== end Google login ==========
 
-# ------------ Helpers ------------
+# ========== Helpers ==========
 def money(x, decimals: int = 0) -> str:
     try:
         return f"${float(x):,.{decimals}f}"
@@ -172,7 +173,7 @@ def chat_with_playbook(messages):
         except Exception as e:
             st.error(f"Unexpected error: {e}"); st.stop()
 
-# ------------ Header ------------
+# ========== Header ==========
 user = st.session_state.get("user", {})
 st.markdown(f"""
 <div style="display:flex;align-items:center;gap:12px;">
@@ -182,10 +183,10 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 st.caption(f"API: {API_URL}")
 
-# ------------ Tabs ------------
+# ========== Tabs ==========
 tab1, tab2 = st.tabs(["Quote", "Sales assistant"])
 
-# ------------ Tab 1: Quote ------------
+# ========== Tab 1: Quote ==========
 with tab1:
     st.subheader("Get a price quote")
     with st.form("inputs", clear_on_submit=False):
@@ -237,7 +238,7 @@ with tab1:
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = best
 
-# ------------ Tab 2: Sales assistant ------------
+# ========== Tab 2: Sales assistant ==========
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
@@ -308,7 +309,7 @@ with tab2:
         st.markdown(st.session_state["proposal_md"])
         st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
 
-# ------------ Sidebar ------------
+# ========== Sidebar ==========
 with st.sidebar:
     st.write(f"Signed in as: {user.get('email','') or 'unknown'}")
     if st.button("Log out"):
