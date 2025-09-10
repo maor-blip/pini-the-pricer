@@ -20,7 +20,7 @@ licenses:
       countries: 4
       users: 3
     unit_prices:
-      kpis: 999.0
+      kpis: 400.0
       channels: 199.0
       countries: 499.0
       users: 99.0
