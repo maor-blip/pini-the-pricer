@@ -4,7 +4,7 @@ licenses:
     base_fee: 3999.0
     included:
       kpis: 1
-      channels: 5
+      channels: 4
       countries: 1
       users: 1
     unit_prices:
