@@ -20,10 +20,10 @@ licenses:
       countries: 4
       users: 3
     unit_prices:
-      kpis: 999.0
-      channels: 199.0
-      countries: 499.0
-      users: 99.0
+      kpis: 899.0
+      channels: 179.0
+      countries: 399.0
+      users: 79.0
   Enterprise:
     base_fee: 11999.0
     included:
@@ -32,10 +32,10 @@ licenses:
       countries: 10
       users: 10
     unit_prices:
-      kpis: 999.0
-      channels: 199.0
-      countries: 499.0
-      users: 99.0
+      kpis: 799.0
+      channels: 159.0
+      countries: 199.0
+      users: 59.0
   Ultimate:
     base_fee: 19999.0
     included:
