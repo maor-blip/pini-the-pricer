@@ -7,4 +7,4 @@ requests
 openai
 google-auth
 google-auth-oauthlib
-streamlit-cookies-manager==0.2.2
+streamlit-cookies-manager==0.2.0
