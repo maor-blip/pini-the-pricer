@@ -114,28 +114,23 @@ def require_google_login():
             "client_secret": GOOGLE_CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            # Register both forms to avoid slash mismatches
             "redirect_uris": [APP_URL, APP_URL + "/"],
             "javascript_origins": [APP_URL],
         }
     }
     flow = Flow.from_client_config(client_config, scopes=OAUTH_SCOPES, redirect_uri=APP_URL)
 
-    # Normalize query params once
+    # Normalize query params
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
 
-    # If Google redirected back with an auth code -> finish login
+    # Finish login if we have a code
     if "code" in params:
-        # Build the full URL using whatever params are present right now
         qs = urllib.parse.urlencode(params, doseq=False)
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
         try:
             flow.fetch_token(authorization_response=authorization_response)
-        except OAuth2Error as e:
-            st.error(f"Google OAuth failed: {getattr(e,'error','oauth_error')} - {getattr(e,'description','')}")
-            st.stop()
         except Exception as e:
-            st.error(f"Token exchange failed: {e}")
+            st.error(f"Google OAuth failed: {e}")
             st.stop()
 
         creds = flow.credentials
@@ -152,35 +147,7 @@ def require_google_login():
         st.query_params.clear()
         st.rerun()
 
-    # If Google returned any error -> show button, do not try silent again
-    err = params.get("error", "")
-    if err:
-        auth_url, _ = flow.authorization_url(
-            access_type="offline",
-            include_granted_scopes="true",
-            prompt="select_account",
-            hd=ALLOWED_DOMAIN,
-        )
-        st.title("Pini the Pricer")
-        st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
-        st.link_button("Continue with Google", auth_url)
-        st.stop()
-
-    # Try silent redirect only once per session to avoid loops
-    tried = st.session_state.get("silent_tried", False)
-    if not tried:
-        st.session_state["silent_tried"] = True
-        auth_url_silent, _ = flow.authorization_url(
-            access_type="online",
-            include_granted_scopes="true",
-            prompt="none",
-            hd=ALLOWED_DOMAIN,
-        )
-        st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url_silent}">', unsafe_allow_html=True)
-        st.write("Redirecting to Google...")
-        st.stop()
-
-    # If we already tried silent and came back without code or with blocked cookies, show button
+    # No code yet -> always show button
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -192,8 +159,6 @@ def require_google_login():
     st.link_button("Continue with Google", auth_url)
     st.stop()
 
-# Gate before any UI
-require_google_login()
 # ---------- end Google login ----------
 
 # ---------- Helpers ----------
