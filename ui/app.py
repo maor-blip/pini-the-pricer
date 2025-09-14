@@ -234,7 +234,7 @@ st.markdown(f"""
     <h2 style="margin:0;">Pini the Pricer</h2>
     <div style="font-size:0.9rem; opacity:0.8;">{user.get('email','')}</div>
   </div>
-  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:40px; max-height:40px; object-fit:contain;" />
+  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:80px; max-height:80px; object-fit:contain;" />
 </div>
 """, unsafe_allow_html=True)
 st.caption(f"API: {API_URL}")
