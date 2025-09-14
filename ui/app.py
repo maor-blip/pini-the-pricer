@@ -323,7 +323,10 @@ with tab2:
 
 # ========== Sidebar ==========
 with st.sidebar:
-    st.write(f"Signed in as: {user.get('email','') or 'unknown'}")
+    st.write(f"Signed in as: {st.session_state.get('user', {}).get('email', 'unknown')}")
     if st.button("Log out"):
+        st.session_state.pop("user", None)
+        clear_login_cookie()
         st.query_params["logout"] = "1"
         st.rerun()
+
