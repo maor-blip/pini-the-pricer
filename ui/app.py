@@ -19,7 +19,8 @@ OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
-APP_URL = (st.secrets.get("APP_URL") or "").rstrip("/")
+RAW_APP_URL = (st.secrets.get("APP_URL") or "").strip()
+APP_URL = RAW_APP_URL.rstrip("/")  # normalize to no trailing slash
 COOKIE_SECRET = st.secrets.get("COOKIE_SECRET") or os.getenv("COOKIE_SECRET") or "dev-secret-change-me"
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
@@ -39,9 +40,7 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 # ---------- Cookies: persistent login ----------
 # API in 0.2.0:
 # - cookies.ready() must be True before use
-# - get: cookies.get(name)
-# - set: cookies[name] = value; cookies.save()
-# - delete: del cookies[name]; cookies.save()
+# - get: cookies.get(name); set: cookies[name]=value; cookies.save(); delete: del cookies[name]; cookies.save()
 cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
 if not cookies.ready():
     st.write("Setting up secure session...")
@@ -115,17 +114,19 @@ def require_google_login():
             "client_secret": GOOGLE_CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [APP_URL],
+            # Register both forms to avoid slash mismatches
+            "redirect_uris": [APP_URL, APP_URL + "/"],
             "javascript_origins": [APP_URL],
         }
     }
     flow = Flow.from_client_config(client_config, scopes=OAUTH_SCOPES, redirect_uri=APP_URL)
 
-    # Normalize query params ONCE so we don't miss errors and spin
+    # Normalize query params once
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
 
     # If Google redirected back with an auth code -> finish login
     if "code" in params:
+        # Build the full URL using whatever params are present right now
         qs = urllib.parse.urlencode(params, doseq=False)
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
         try:
@@ -151,7 +152,7 @@ def require_google_login():
         st.query_params.clear()
         st.rerun()
 
-    # If Google responded with any error at all -> show button, do NOT silent redirect again
+    # If Google returned any error -> show button, do not try silent again
     err = params.get("error", "")
     if err:
         auth_url, _ = flow.authorization_url(
@@ -165,17 +166,30 @@ def require_google_login():
         st.link_button("Continue with Google", auth_url)
         st.stop()
 
-    # First visit or returning user with active Google session -> try silent redirect ONCE
-    # We only attempt it when there is no code and no error in the URL.
-    auth_url_silent, _ = flow.authorization_url(
-        access_type="online",
+    # Try silent redirect only once per session to avoid loops
+    tried = st.session_state.get("silent_tried", False)
+    if not tried:
+        st.session_state["silent_tried"] = True
+        auth_url_silent, _ = flow.authorization_url(
+            access_type="online",
+            include_granted_scopes="true",
+            prompt="none",
+            hd=ALLOWED_DOMAIN,
+        )
+        st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url_silent}">', unsafe_allow_html=True)
+        st.write("Redirecting to Google...")
+        st.stop()
+
+    # If we already tried silent and came back without code or with blocked cookies, show button
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
         include_granted_scopes="true",
-        prompt="none",
+        prompt="select_account",
         hd=ALLOWED_DOMAIN,
     )
-    # meta refresh instead of st.experimental_rerun to avoid rerun storms
-    st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url_silent}">', unsafe_allow_html=True)
-    st.write("Redirecting to Google...")
+    st.title("Pini the Pricer")
+    st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
+    st.link_button("Continue with Google", auth_url)
     st.stop()
 
 # Gate before any UI
