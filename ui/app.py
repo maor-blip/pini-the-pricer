@@ -44,7 +44,8 @@ st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide"
 #   - get with cookies.get(NAME)
 #   - delete with cookies.delete(NAME) then cookies.save(...)
 cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
-cookies.load()  # important - populate cookies before use
+if not cookies.ready():  # this triggers the initial cookie handshake
+    st.stop()
 
 COOKIE_NAME = "auth"
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
