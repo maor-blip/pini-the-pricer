@@ -6,6 +6,7 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # ========== Config from secrets (fail closed if missing) ==========
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -14,13 +15,13 @@ GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
 APP_URL = (st.secrets.get("APP_URL") or "").rstrip("/")
+COOKIE_SECRET = st.secrets.get("COOKIE_SECRET") or os.getenv("COOKIE_SECRET") or "dev-secret-change-me"
 
-# Hard assertions so we never render UI without auth configured
 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
     st.stop()
 
-# Long-form scopes to match what Google returns
+# Long form scopes to match Google response
 OAUTH_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -31,11 +32,47 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
-# ---- Hard logout handler (runs before auth) ----
+# ---- Cookies: persistent login token ----
+cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
+if not cookies.ready():
+    # First render sometimes needs a moment to load cookies
+    st.stop()
+
+COOKIE_NAME = "auth"
+COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
+def set_login_cookie(email: str, name: str = "", picture: str = ""):
+    payload = json.dumps({
+        "email": email,
+        "name": name,
+        "picture": picture,
+        "ts": int(time.time())
+    })
+    cookies.set_cookie(COOKIE_NAME, payload, max_age=COOKIE_TTL_SECONDS, path="/", secure=True, samesite="Lax")
+    cookies.save()
+
+def get_login_cookie():
+    raw = cookies.get(COOKIE_NAME)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if int(time.time()) - int(data.get("ts", 0)) > COOKIE_TTL_SECONDS:
+            return None
+        return data
+    except Exception:
+        return None
+
+def clear_login_cookie():
+    cookies.delete(COOKIE_NAME, path="/")
+    cookies.save()
+
+# ---- Hard logout handler (before auth) ----
 def handle_forced_logout():
     raw = dict(st.query_params)
     if raw.get("logout") == "1":
         st.session_state.pop("user", None)
+        clear_login_cookie()
         try:
             st.cache_data.clear()
             st.cache_resource.clear()
@@ -44,16 +81,26 @@ def handle_forced_logout():
         st.query_params.clear()
         st.success("Logged out. Please sign in again.")
         st.stop()
-
 handle_forced_logout()
 
-# ========== Google Workspace login (hard gate) ==========
+# ========== Google Workspace login with silent SSO + cookie resume ==========
 def require_google_login():
-    # If already signed in, continue
+    # Cookie-based auto login first
+    if not st.session_state.get("user"):
+        cached = get_login_cookie()
+        if cached and isinstance(cached, dict):
+            email = (cached.get("email") or "").strip().lower()
+            if email.endswith(f"@{ALLOWED_DOMAIN}"):
+                st.session_state["user"] = {
+                    "email": email,
+                    "name": cached.get("name", ""),
+                    "picture": cached.get("picture", ""),
+                }
+                return
+
     if st.session_state.get("user"):
         return
 
-    # Build OAuth flow
     client_config = {
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
@@ -64,28 +111,22 @@ def require_google_login():
             "javascript_origins": [APP_URL],
         }
     }
-
     flow = Flow.from_client_config(
         client_config,
         scopes=OAUTH_SCOPES,
         redirect_uri=APP_URL,
     )
 
-    # If Google redirected back with ?code=...
+    # If Google redirected back with a code -> finish login
     raw_params = dict(st.query_params)
     if "code" in raw_params:
-        # Flatten any list values
         flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
         qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
-
         try:
             flow.fetch_token(authorization_response=authorization_response)
         except OAuth2Error as e:
-            err = getattr(e, "error", "oauth_error")
-            desc = getattr(e, "description", "")
-            st.error(f"Google OAuth failed: {err} - {desc}")
-            st.info("Check: redirect URI matches APP_URL exactly, client ID/secret valid, consent screen, or stale code reuse.")
+            st.error(f"Google OAuth failed: {getattr(e,'error','oauth_error')} - {getattr(e,'description','')}")
             st.stop()
         except Exception as e:
             st.error(f"Token exchange failed: {e}")
@@ -96,35 +137,44 @@ def require_google_login():
             creds._id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
         email = (info.get("email") or "").strip().lower()
-        hosted_domain = (info.get("hd") or "").strip().lower()
+        hd = (info.get("hd") or "").strip().lower()
 
-        # Enforce domain
-        if (hosted_domain and hosted_domain != ALLOWED_DOMAIN) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
+        if (hd and hd != ALLOWED_DOMAIN) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
             st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
             st.stop()
 
-        st.session_state["user"] = {
-            "email": email,
-            "name": info.get("name", ""),
-            "picture": info.get("picture", ""),
-        }
-
-        # Clean query params and rerun a fresh session
+        st.session_state["user"] = {"email": email, "name": info.get("name",""), "picture": info.get("picture","")}
+        # Persist login for next visits
+        set_login_cookie(email, info.get("name",""), info.get("picture",""))
         st.query_params.clear()
         st.rerun()
 
-    # Not signed in yet - show Google button and stop
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
+    # If Google bounced us back asking for interaction -> show normal button
+    err = raw_params.get("error", "")
+    if err in ("interaction_required", "consent_required", "login_required", "account_selection_required"):
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="select_account",
+            hd=ALLOWED_DOMAIN,
+        )
+        st.title("Pini the Pricer")
+        st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
+        st.link_button("Continue with Google", auth_url)
+        st.stop()
+
+    # First visit or returning user with active Google session -> silent redirect
+    auth_url_silent, _ = flow.authorization_url(
+        access_type="online",
         include_granted_scopes="true",
-        prompt="consent",
+        prompt="none",
+        hd=ALLOWED_DOMAIN,
     )
-    st.title("Pini the Pricer")
-    st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
-    st.link_button("Continue with Google", auth_url)
+    st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url_silent}">', unsafe_allow_html=True)
+    st.write("Redirecting to Google…")
     st.stop()
 
-# Call the gate BEFORE any UI
+# Gate before any UI
 require_google_login()
 # ========== end Google login ==========
 
@@ -143,27 +193,20 @@ def post_json(url, payload, retries=2):
             try:
                 return r.json()
             except Exception:
-                st.error("API returned non-JSON response")
-                st.code(r.text)
-                st.stop()
+                st.error("API returned non-JSON response"); st.code(r.text); st.stop()
         except requests.exceptions.RequestException as e:
             if attempt < retries:
-                time.sleep(2)
-                continue
-            st.error(f"Request failed: {e}")
-            st.stop()
+                time.sleep(2); continue
+            st.error(f"Request failed: {e}"); st.stop()
 
 def chat_with_playbook(messages):
     if not client:
-        st.error("Missing OPENAI_API_KEY in secrets")
-        st.stop()
+        st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
     max_retries, backoff = 4, 2
     for attempt in range(max_retries):
         try:
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                temperature=0.3,
-                messages=messages,
+                model="gpt-4o-mini", temperature=0.3, messages=messages,
             )
             return resp.choices[0].message.content
         except (RateLimitError, APIError) as e:
@@ -173,26 +216,18 @@ def chat_with_playbook(messages):
         except Exception as e:
             st.error(f"Unexpected error: {e}"); st.stop()
 
-# ========== Header ==========
+# ========== Header with right-aligned logo ==========
 IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
-
 user = st.session_state.get("user", {})
-
 st.markdown(f"""
-<div style="
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:4px 0 8px 0;
-">
+<div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0 8px 0;">
   <div style="display:flex; align-items:center; gap:12px;">
     <h2 style="margin:0;">Pini the Pricer</h2>
     <div style="font-size:0.9rem; opacity:0.8;">{user.get('email','')}</div>
   </div>
-  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:100px; max-height:100px; object-fit:contain;" />
+  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:40px; max-height:40px; object-fit:contain;" />
 </div>
 """, unsafe_allow_html=True)
-
 st.caption(f"API: {API_URL}")
 
 # ========== Tabs ==========
@@ -209,10 +244,7 @@ with tab1:
         with col2:
             countries = st.number_input("Countries", min_value=0, value=1, step=1)
             users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
-        license_choice = st.selectbox(
-            "Force license (optional)",
-            options=["(auto)", "SMB", "Pro", "Enterprise", "Ultimate"]
-        )
+        license_choice = st.selectbox("Force license (optional)", options=["(auto)", "SMB", "Pro", "Enterprise", "Ultimate"])
         submitted = st.form_submit_button("Get quote")
 
     if submitted:
@@ -221,7 +253,6 @@ with tab1:
         if license_choice != "(auto)":
             payload["license"] = license_choice
             resp = post_json(f"{API_URL}/quote", payload)
-
             st.subheader(f"License: {resp['license']} - Version {resp['version']}")
             st.metric("Total Monthly (USD)", money(resp['total_monthly']))
             st.write(f"License discount: {int(round(resp.get('license_discount_pct', 0)*100))}% -> -{money(resp.get('license_discount_amount', 0))}")
@@ -233,7 +264,6 @@ with tab1:
             st.caption("No taxes. Currency USD.")
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = resp
-
         else:
             resp = post_json(f"{API_URL}/quote", payload)
             st.subheader(f"Recommended: {resp['recommended']}")
@@ -254,12 +284,13 @@ with tab1:
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
-        st.session_state["chat"] = [
-            {"role": "system",
-             "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
-                         "Tone - direct, helpful, confident. "
-                         "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
-                         "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote.")}]
+        st.session_state["chat"] = [{
+            "role": "system",
+            "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
+                        "Tone - direct, helpful, confident. "
+                        "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
+                        "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote.")
+        }]
 
     for m in st.session_state["chat"]:
         if m["role"] != "system":
@@ -323,10 +354,9 @@ with tab2:
 
 # ========== Sidebar ==========
 with st.sidebar:
-    st.write(f"Signed in as: {st.session_state.get('user', {}).get('email', 'unknown')}")
+    st.write(f"Signed in as: {user.get('email','') or 'unknown'}")
     if st.button("Log out"):
         st.session_state.pop("user", None)
         clear_login_cookie()
         st.query_params["logout"] = "1"
         st.rerun()
-
