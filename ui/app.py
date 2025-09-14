@@ -7,11 +7,11 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
-# Cookie lib - match your requirements (streamlit-cookies-manager==0.2.0)
+# Cookie lib - streamlit-cookies-manager==0.2.0
 try:
-    from streamlit_cookies_manager import EncryptedCookieManager  # primary import path
+    from streamlit_cookies_manager import EncryptedCookieManager
 except Exception:
-    from cookies_manager import EncryptedCookieManager  # fallback on some builds
+    from cookies_manager import EncryptedCookieManager  # fallback
 
 # ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -22,8 +22,9 @@ ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().l
 APP_URL = (st.secrets.get("APP_URL") or "").rstrip("/")
 COOKIE_SECRET = st.secrets.get("COOKIE_SECRET") or os.getenv("COOKIE_SECRET") or "dev-secret-change-me"
 
+st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
+
 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
-    st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
     st.stop()
 
@@ -35,18 +36,14 @@ OAUTH_SCOPES = [
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
-
 # ---------- Cookies: persistent login ----------
-# streamlit-cookies-manager 0.2.0 API:
-# - cookies.ready() returns False on the first run to create handshake cookie
-# - get with cookies.get(name)
-# - set with cookies[name] = value; then cookies.save()
-# - delete by `del cookies[name]` or overwrite empty; then cookies.save()
+# API in 0.2.0:
+# - cookies.ready() must be True before use
+# - get: cookies.get(name)
+# - set: cookies[name] = value; cookies.save()
+# - delete: del cookies[name]; cookies.save()
 cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
-
 if not cookies.ready():
-    # First load in a new session (incognito) - show a quick message and auto refresh
     st.write("Setting up secure session...")
     st.markdown('<meta http-equiv="refresh" content="0.5">', unsafe_allow_html=True)
     st.stop()
@@ -55,12 +52,7 @@ COOKIE_NAME = "auth"
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 
 def set_login_cookie(email: str, name: str = "", picture: str = ""):
-    payload = json.dumps({
-        "email": email,
-        "name": name,
-        "picture": picture,
-        "ts": int(time.time())
-    })
+    payload = json.dumps({"email": email, "name": name, "picture": picture, "ts": int(time.time())})
     cookies[COOKIE_NAME] = payload
     cookies.save()
 
@@ -78,19 +70,15 @@ def get_login_cookie():
 
 def clear_login_cookie():
     try:
-        # Some builds don’t expose delete(); use del or overwrite
-        try:
-            del cookies[COOKIE_NAME]
-        except Exception:
-            cookies[COOKIE_NAME] = ""
-        cookies.save()
+        del cookies[COOKIE_NAME]
     except Exception:
-        pass
+        cookies[COOKIE_NAME] = ""
+    cookies.save()
 
-# ---------- Hard logout handler (before auth) ----------
+# ---------- Hard logout handler ----------
 def handle_forced_logout():
-    raw = dict(st.query_params)
-    if raw.get("logout") == "1":
+    params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
+    if params.get("logout") == "1":
         st.session_state.pop("user", None)
         clear_login_cookie()
         try:
@@ -105,7 +93,7 @@ handle_forced_logout()
 
 # ---------- Google login with silent SSO + cookie resume ----------
 def require_google_login():
-    # Resume via cookie first
+    # Resume from cookie first
     if not st.session_state.get("user"):
         cached = get_login_cookie()
         if cached and isinstance(cached, dict):
@@ -131,17 +119,14 @@ def require_google_login():
             "javascript_origins": [APP_URL],
         }
     }
-    flow = Flow.from_client_config(
-        client_config,
-        scopes=OAUTH_SCOPES,
-        redirect_uri=APP_URL,
-    )
+    flow = Flow.from_client_config(client_config, scopes=OAUTH_SCOPES, redirect_uri=APP_URL)
 
-    # Complete login if Google redirected back with code
-    raw_params = dict(st.query_params)
-    if "code" in raw_params:
-        flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
-        qs = urllib.parse.urlencode(flat, doseq=True) if flat else ""
+    # Normalize query params ONCE so we don't miss errors and spin
+    params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
+
+    # If Google redirected back with an auth code -> finish login
+    if "code" in params:
+        qs = urllib.parse.urlencode(params, doseq=False)
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
         try:
             flow.fetch_token(authorization_response=authorization_response)
@@ -153,9 +138,7 @@ def require_google_login():
             st.stop()
 
         creds = flow.credentials
-        info = id_token.verify_oauth2_token(
-            creds.id_token, google_requests.Request(), GOOGLE_CLIENT_ID
-        )
+        info = id_token.verify_oauth2_token(creds.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
         email = (info.get("email") or "").strip().lower()
         hd = (info.get("hd") or "").strip().lower()
 
@@ -168,9 +151,9 @@ def require_google_login():
         st.query_params.clear()
         st.rerun()
 
-    # If Google needs interaction -> show button
-    err = raw_params.get("error", "")
-    if err in ("interaction_required", "consent_required", "login_required", "account_selection_required"):
+    # If Google responded with any error at all -> show button, do NOT silent redirect again
+    err = params.get("error", "")
+    if err:
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
@@ -182,13 +165,15 @@ def require_google_login():
         st.link_button("Continue with Google", auth_url)
         st.stop()
 
-    # First visit or returning user with active Google session -> silent redirect
+    # First visit or returning user with active Google session -> try silent redirect ONCE
+    # We only attempt it when there is no code and no error in the URL.
     auth_url_silent, _ = flow.authorization_url(
         access_type="online",
         include_granted_scopes="true",
         prompt="none",
         hd=ALLOWED_DOMAIN,
     )
+    # meta refresh instead of st.experimental_rerun to avoid rerun storms
     st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url_silent}">', unsafe_allow_html=True)
     st.write("Redirecting to Google...")
     st.stop()
