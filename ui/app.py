@@ -7,13 +7,13 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
-# Cookie lib - prefer the package you installed in requirements.txt
+# Cookie lib - match your requirements (streamlit-cookies-manager==0.2.0)
 try:
-    from streamlit_cookies_manager import EncryptedCookieManager
+    from streamlit_cookies_manager import EncryptedCookieManager  # primary import path
 except Exception:
-    from cookies_manager import EncryptedCookieManager  # fallback for some envs
+    from cookies_manager import EncryptedCookieManager  # fallback on some builds
 
-# ========== Config from secrets (fail closed if missing) ==========
+# ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
@@ -23,6 +23,7 @@ APP_URL = (st.secrets.get("APP_URL") or "").rstrip("/")
 COOKIE_SECRET = st.secrets.get("COOKIE_SECRET") or os.getenv("COOKIE_SECRET") or "dev-secret-change-me"
 
 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
+    st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
     st.stop()
 
@@ -36,15 +37,18 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
-# ---- Cookies: persistent login token ----
-# Correct API for streamlit-cookies-manager 0.2.0:
-# - Create the manager
-# - Check cookies.ready() and st.stop() if not ready yet
-# - Get with cookies.get(name)
-# - Set with dict style cookies[name] = value, then cookies.save()
-# - Delete with cookies.delete(name), then cookies.save()
+# ---------- Cookies: persistent login ----------
+# streamlit-cookies-manager 0.2.0 API:
+# - cookies.ready() returns False on the first run to create handshake cookie
+# - get with cookies.get(name)
+# - set with cookies[name] = value; then cookies.save()
+# - delete by `del cookies[name]` or overwrite empty; then cookies.save()
 cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
-if not cookies.ready():  # this triggers the initial cookie handshake
+
+if not cookies.ready():
+    # First load in a new session (incognito) - show a quick message and auto refresh
+    st.write("Setting up secure session...")
+    st.markdown('<meta http-equiv="refresh" content="0.5">', unsafe_allow_html=True)
     st.stop()
 
 COOKIE_NAME = "auth"
@@ -58,7 +62,6 @@ def set_login_cookie(email: str, name: str = "", picture: str = ""):
         "ts": int(time.time())
     })
     cookies[COOKIE_NAME] = payload
-    # Library in this version uses a simple save() with no kwargs
     cookies.save()
 
 def get_login_cookie():
@@ -74,10 +77,17 @@ def get_login_cookie():
         return None
 
 def clear_login_cookie():
-    cookies.delete(COOKIE_NAME)
-    cookies.save()
+    try:
+        # Some builds don’t expose delete(); use del or overwrite
+        try:
+            del cookies[COOKIE_NAME]
+        except Exception:
+            cookies[COOKIE_NAME] = ""
+        cookies.save()
+    except Exception:
+        pass
 
-# ---- Hard logout handler (before auth) ----
+# ---------- Hard logout handler (before auth) ----------
 def handle_forced_logout():
     raw = dict(st.query_params)
     if raw.get("logout") == "1":
@@ -93,9 +103,9 @@ def handle_forced_logout():
         st.stop()
 handle_forced_logout()
 
-# ========== Google Workspace login with silent SSO + cookie resume ==========
+# ---------- Google login with silent SSO + cookie resume ----------
 def require_google_login():
-    # Cookie-based auto login first
+    # Resume via cookie first
     if not st.session_state.get("user"):
         cached = get_login_cookie()
         if cached and isinstance(cached, dict):
@@ -127,7 +137,7 @@ def require_google_login():
         redirect_uri=APP_URL,
     )
 
-    # If Google redirected back with a code -> finish login
+    # Complete login if Google redirected back with code
     raw_params = dict(st.query_params)
     if "code" in raw_params:
         flat = {k: (v[0] if isinstance(v, list) else v) for k, v in raw_params.items()}
@@ -158,7 +168,7 @@ def require_google_login():
         st.query_params.clear()
         st.rerun()
 
-    # If Google bounced us back asking for interaction -> show normal button
+    # If Google needs interaction -> show button
     err = raw_params.get("error", "")
     if err in ("interaction_required", "consent_required", "login_required", "account_selection_required"):
         auth_url, _ = flow.authorization_url(
@@ -180,14 +190,14 @@ def require_google_login():
         hd=ALLOWED_DOMAIN,
     )
     st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url_silent}">', unsafe_allow_html=True)
-    st.write("Redirecting to Google…")
+    st.write("Redirecting to Google...")
     st.stop()
 
 # Gate before any UI
 require_google_login()
-# ========== end Google login ==========
+# ---------- end Google login ----------
 
-# ========== Helpers ==========
+# ---------- Helpers ----------
 def money(x, decimals: int = 0) -> str:
     try:
         return f"${float(x):,.{decimals}f}"
@@ -225,7 +235,7 @@ def chat_with_playbook(messages):
         except Exception as e:
             st.error(f"Unexpected error: {e}"); st.stop()
 
-# ========== Header with right-aligned logo ==========
+# ---------- Header ----------
 IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
 user = st.session_state.get("user", {})
 st.markdown(f"""
@@ -234,15 +244,15 @@ st.markdown(f"""
     <h2 style="margin:0;">Pini the Pricer</h2>
     <div style="font-size:0.9rem; opacity:0.8;">{user.get('email','')}</div>
   </div>
-  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:80px; max-height:80px; object-fit:contain;" />
+  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:40px; max-height:40px; object-fit:contain;" />
 </div>
 """, unsafe_allow_html=True)
 st.caption(f"API: {API_URL}")
 
-# ========== Tabs ==========
+# ---------- Tabs ----------
 tab1, tab2 = st.tabs(["Quote", "Sales assistant"])
 
-# ========== Tab 1: Quote ==========
+# ---------- Tab 1: Quote ----------
 with tab1:
     st.subheader("Get a price quote")
     with st.form("inputs", clear_on_submit=False):
@@ -289,7 +299,7 @@ with tab1:
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = best
 
-# ========== Tab 2: Sales assistant ==========
+# ---------- Tab 2: Sales assistant ----------
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
@@ -361,7 +371,7 @@ with tab2:
         st.markdown(st.session_state["proposal_md"])
         st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
 
-# ========== Sidebar ==========
+# ---------- Sidebar ----------
 with st.sidebar:
     st.write(f"Signed in as: {user.get('email','') or 'unknown'}")
     if st.button("Log out"):
