@@ -7,11 +7,11 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
-# Cookie lib - support either import path just in case
+# Cookie lib - prefer the package you installed in requirements.txt
 try:
-    from cookies_manager import EncryptedCookieManager  # streamlit-cookies-manager
+    from streamlit_cookies_manager import EncryptedCookieManager
 except Exception:
-    from streamlit_cookies_manager import EncryptedCookieManager  # fallback
+    from cookies_manager import EncryptedCookieManager  # fallback for some envs
 
 # ========== Config from secrets (fail closed if missing) ==========
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -26,7 +26,6 @@ if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
     st.stop()
 
-# Long form scopes to match Google response
 OAUTH_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -38,11 +37,12 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
 # ---- Cookies: persistent login token ----
-# Correct API for streamlit-cookies-manager:
-#   - call cookies.load() once
-#   - set with dict style cookies[NAME] = value then cookies.save(...)
-#   - get with cookies.get(NAME)
-#   - delete with cookies.delete(NAME) then cookies.save(...)
+# Correct API for streamlit-cookies-manager 0.2.0:
+# - Create the manager
+# - Check cookies.ready() and st.stop() if not ready yet
+# - Get with cookies.get(name)
+# - Set with dict style cookies[name] = value, then cookies.save()
+# - Delete with cookies.delete(name), then cookies.save()
 cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
 if not cookies.ready():  # this triggers the initial cookie handshake
     st.stop()
@@ -57,10 +57,9 @@ def set_login_cookie(email: str, name: str = "", picture: str = ""):
         "picture": picture,
         "ts": int(time.time())
     })
-    # dict-style set + save
     cookies[COOKIE_NAME] = payload
-    # send cookie to browser
-    cookies.save(max_age=COOKIE_TTL_SECONDS, path="/", samesite="Lax", secure=True)
+    # Library in this version uses a simple save() with no kwargs
+    cookies.save()
 
 def get_login_cookie():
     raw = cookies.get(COOKIE_NAME)
@@ -76,7 +75,7 @@ def get_login_cookie():
 
 def clear_login_cookie():
     cookies.delete(COOKIE_NAME)
-    cookies.save(path="/", samesite="Lax", secure=True)
+    cookies.save()
 
 # ---- Hard logout handler (before auth) ----
 def handle_forced_logout():
@@ -144,7 +143,6 @@ def require_google_login():
             st.stop()
 
         creds = flow.credentials
-        # Use public attribute id_token, not private _id_token
         info = id_token.verify_oauth2_token(
             creds.id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
@@ -156,7 +154,6 @@ def require_google_login():
             st.stop()
 
         st.session_state["user"] = {"email": email, "name": info.get("name",""), "picture": info.get("picture","")}
-        # Persist login for next visits
         set_login_cookie(email, info.get("name",""), info.get("picture",""))
         st.query_params.clear()
         st.rerun()
