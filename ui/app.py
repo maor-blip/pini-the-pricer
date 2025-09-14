@@ -6,7 +6,12 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
-from streamlit_cookies_manager import EncryptedCookieManager
+
+# Cookie lib - support either import path just in case
+try:
+    from cookies_manager import EncryptedCookieManager  # streamlit-cookies-manager
+except Exception:
+    from streamlit_cookies_manager import EncryptedCookieManager  # fallback
 
 # ========== Config from secrets (fail closed if missing) ==========
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -33,10 +38,13 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
 # ---- Cookies: persistent login token ----
+# Correct API for streamlit-cookies-manager:
+#   - call cookies.load() once
+#   - set with dict style cookies[NAME] = value then cookies.save(...)
+#   - get with cookies.get(NAME)
+#   - delete with cookies.delete(NAME) then cookies.save(...)
 cookies = EncryptedCookieManager(prefix="pti_", password=COOKIE_SECRET)
-if not cookies.ready():
-    # First render sometimes needs a moment to load cookies
-    st.stop()
+cookies.load()  # important - populate cookies before use
 
 COOKIE_NAME = "auth"
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
@@ -48,8 +56,10 @@ def set_login_cookie(email: str, name: str = "", picture: str = ""):
         "picture": picture,
         "ts": int(time.time())
     })
-    cookies.set_cookie(COOKIE_NAME, payload, max_age=COOKIE_TTL_SECONDS, path="/", secure=True, samesite="Lax")
-    cookies.save()
+    # dict-style set + save
+    cookies[COOKIE_NAME] = payload
+    # send cookie to browser
+    cookies.save(max_age=COOKIE_TTL_SECONDS, path="/", samesite="Lax", secure=True)
 
 def get_login_cookie():
     raw = cookies.get(COOKIE_NAME)
@@ -64,8 +74,8 @@ def get_login_cookie():
         return None
 
 def clear_login_cookie():
-    cookies.delete(COOKIE_NAME, path="/")
-    cookies.save()
+    cookies.delete(COOKIE_NAME)
+    cookies.save(path="/", samesite="Lax", secure=True)
 
 # ---- Hard logout handler (before auth) ----
 def handle_forced_logout():
@@ -133,8 +143,9 @@ def require_google_login():
             st.stop()
 
         creds = flow.credentials
+        # Use public attribute id_token, not private _id_token
         info = id_token.verify_oauth2_token(
-            creds._id_token, google_requests.Request(), GOOGLE_CLIENT_ID
+            creds.id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
         email = (info.get("email") or "").strip().lower()
         hd = (info.get("hd") or "").strip().lower()
