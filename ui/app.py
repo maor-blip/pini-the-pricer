@@ -1,7 +1,6 @@
 import os, json, time, urllib.parse
 import requests
 import streamlit as st
-from openai import OpenAI, RateLimitError, APIError
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -10,7 +9,6 @@ import extra_streamlit_components as stx  # simple cookie manager
 
 # ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
@@ -28,8 +26,6 @@ OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
-
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ---------- Cookies: persistent login (no handshake) ----------
 cookie_mgr = stx.CookieManager(key="pini_cookies")
@@ -164,21 +160,22 @@ def post_json(url, payload, retries=2):
             st.error(f"Request failed: {e}"); st.stop()
 
 def chat_with_playbook(messages):
-    if not client:
+    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key:
         st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
-    max_retries, backoff = 4, 2
-    for attempt in range(max_retries):
-        try:
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini", temperature=0.3, messages=messages,
-            )
-            return resp.choices[0].message.content
-        except (RateLimitError, APIError) as e:
-            if attempt < max_retries - 1:
-                time.sleep(backoff); backoff *= 2; continue
-            st.error(f"OpenAI error: {e}"); st.stop()
-        except Exception as e:
-            st.error(f"Unexpected error: {e}"); st.stop()
+
+    # Lazy import and init so a bad Python version doesn’t crash the whole app
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini", temperature=0.3, messages=messages,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        st.error(f"OpenAI init or call failed: {e}")
+        st.info("Common cause on Render is Python 3.13. Set PYTHON_VERSION=3.11.9, clear build cache, redeploy.")
+        st.stop()
 
 # ---------- Header ----------
 IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
@@ -186,7 +183,7 @@ user = st.session_state.get("user", {})
 st.markdown(f"""
 <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0 8px 0;">
   <div style="display:flex; align-items:center; gap:12px;">
-    <h2 style="margin:0;">Pini the Pricer</h2>
+    <h2>Pini the Pricer</h2>
     <div style="font-size:0.9rem; opacity:0.8;">{user.get('email','')}</div>
   </div>
   <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:40px; max-height:40px; object-fit:contain;" />
@@ -279,30 +276,21 @@ with tab2:
     with colB:
         if st.button("Create proposal draft"):
             q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
-            if not client:
-                st.error("Missing OPENAI_API_KEY in secrets")
-            elif not q or not inp:
-                st.warning("No quote yet. Generate a quote first.")
-            else:
-                pricing_blurb = (
-                    f"License: {q.get('license','recommended')}\n"
-                    f"Total monthly: {money(q.get('total_monthly'))}\n"
-                    f"Total annual: {money(q.get('total_annual'))}\n"
-                )
-                prompt = (
+            content = chat_with_playbook([
+                {"role": "system", "content": "You write clean, concise sales proposals for INCRMNTAL. Short bullets and straight talk."},
+                {"role": "user", "content":
                     "Write a concise proposal for INCRMNTAL.\n"
                     "Audience - senior marketing decision maker.\n"
                     "Sections: Summary, Package and pricing, What you get, Why INCRMNTAL, Next steps.\n"
                     "Use short paragraphs and bullets. No fluff.\n"
-                    f"Pricing context:\n{pricing_blurb}\n"
+                    f"Pricing context:\nLicense: {q.get('license','recommended')}\n"
+                    f"Total monthly: {money(q.get('total_monthly'))}\n"
+                    f"Total annual: {money(q.get('total_annual'))}\n"
                     "State prices in USD monthly and annual exactly as provided above."
-                )
-                content = chat_with_playbook([
-                    {"role": "system", "content": "You write clean, concise sales proposals for INCRMNTAL. Short bullets and straight talk."},
-                    {"role": "user", "content": prompt}
-                ])
-                st.session_state["proposal_md"] = content
-                st.success("Proposal draft ready below.")
+                }
+            ])
+            st.session_state["proposal_md"] = content
+            st.success("Proposal draft ready below.")
 
     user_msg = st.chat_input("Ask anything - pricing, objections, next steps")
     if user_msg:
