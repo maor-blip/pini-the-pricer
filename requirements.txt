@@ -7,4 +7,4 @@ requests==2.32.3
 openai==1.51.2
 google-auth==2.33.0
 google-auth-oauthlib==1.2.1
-extra-streamlit-components==0.1.76
+extra-streamlit-components==0.1.81
