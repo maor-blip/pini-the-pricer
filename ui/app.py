@@ -15,7 +15,7 @@ GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
 RAW_APP_URL = (st.secrets.get("APP_URL") or "").strip()
-APP_URL = RAW_APP_URL.rstrip("/")  # normalize
+APP_URL = RAW_APP_URL.rstrip("/")  # normalize to no trailing slash
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
@@ -31,10 +31,10 @@ OAUTH_SCOPES = [
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# ---------- Cookies - no handshake, no loop ----------
+# ---------- Cookies: persistent login (no handshake) ----------
 cookie_mgr = stx.CookieManager(key="pini_cookies")
 COOKIE_NAME = "auth"
-COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
+COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 
 def set_login_cookie(email: str, name: str = "", picture: str = ""):
     payload = json.dumps({"email": email, "name": name, "picture": picture, "ts": int(time.time())})
