@@ -161,24 +161,40 @@ def post_json(url, payload, retries=2):
                 time.sleep(2); continue
             st.error(f"Request failed: {e}"); st.stop()
 
-# ---------- Custom GPT Integration ----------
+# ---------- Custom GPT Behavior Emulation ----------
 def chat_with_playbook(messages):
-    if not OPENAI_API_KEY:
+    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key:
         st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
-    if not CUSTOM_GPT_ID:
-        st.error("Missing CUSTOM_GPT_ID in secrets"); st.stop()
+
+    # Emulate the INCRMNTAL Sales Playbook GPT behavior
+    system_instructions = (
+        "You are the INCRMNTAL Sales Playbook. "
+        "You speak as an experienced marketing measurement strategist from INCRMNTAL. "
+        "Be concise, confident, and practical — never fluffy. "
+        "Your role: help salespeople explain INCRMNTAL’s pricing, ROI impact, and competitive advantages "
+        "over Measured, Recast, LiftLab, and Northbeam. "
+        "When creating proposals, you use short bullet points and always keep the tone human and intelligent. "
+        "You are honest and direct — if something isn’t relevant, say so clearly. "
+        "Never use jargon or buzzwords. Keep it useful."
+    )
+
+    # Always inject this at the top of the conversation
+    msgs = [{"role": "system", "content": system_instructions}] + messages
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
         resp = client.chat.completions.create(
-            model=CUSTOM_GPT_ID,  # Use your custom GPT ID instead of base model
+            model="gpt-4o-mini",  # or "gpt-4o" if you want slightly smarter responses
             temperature=0.3,
-            messages=messages,
+            messages=msgs,
         )
         return resp.choices[0].message.content
     except Exception as e:
-        st.error(f"Error communicating with your custom GPT: {e}")
+        st.error(f"OpenAI call failed: {e}")
         st.stop()
+
 
 # ---------- Header ----------
 IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
