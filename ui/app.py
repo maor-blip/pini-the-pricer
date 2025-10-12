@@ -1,10 +1,22 @@
-import os, json, time, urllib.parse
+import os, json, time, urllib.parse, subprocess
 import requests
 import streamlit as st
 
-# ✅ must be first Streamlit command
+# ✅ Must be first Streamlit call
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
+# ---------- Ensure latest OpenAI SDK ----------
+try:
+    import openai
+    ver = tuple(map(int, openai.__version__.split(".")[:2]))
+    if ver < (1, 52):
+        st.warning(f"Upgrading old OpenAI SDK ({openai.__version__})...")
+        subprocess.run(["pip", "install", "--upgrade", "openai>=1.52.0"], check=False)
+        import importlib; importlib.reload(openai)
+except Exception:
+    subprocess.run(["pip", "install", "--upgrade", "openai>=1.52.0"], check=False)
+
+# ---------- Imports ----------
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -69,7 +81,6 @@ def handle_forced_logout():
         st.query_params.clear()
         st.success("Logged out. Please sign in again.")
         st.stop()
-
 handle_forced_logout()
 
 # ---------- Google login ----------
@@ -101,7 +112,6 @@ def require_google_login():
     flow = Flow.from_client_config(client_config, scopes=OAUTH_SCOPES, redirect_uri=APP_URL)
 
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
-
     if "code" in params:
         qs = urllib.parse.urlencode(params, doseq=False)
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
@@ -118,11 +128,9 @@ def require_google_login():
         info = id_token.verify_oauth2_token(creds.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
         email = (info.get("email") or "").strip().lower()
         hd = (info.get("hd") or "").strip().lower()
-
         if (hd and hd != ALLOWED_DOMAIN) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
             st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
             st.stop()
-
         st.session_state["user"] = {"email": email, "name": info.get("name",""), "picture": info.get("picture","")}
         set_login_cookie(email, info.get("name",""), info.get("picture",""))
         st.query_params.clear()
@@ -139,7 +147,6 @@ def require_google_login():
     st.link_button("Continue with Google", auth_url)
     st.stop()
 
-# Require login before UI
 require_google_login()
 
 # ---------- Helpers ----------
@@ -167,9 +174,8 @@ def chat_with_playbook(messages):
     key = OPENAI_API_KEY
     if not key:
         st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
-
     try:
-        client = OpenAI(api_key=key, http_client=None)
+        client = OpenAI(api_key=key)  # no proxy params here
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0.3,
@@ -210,43 +216,28 @@ with tab1:
             users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
         license_choice = st.selectbox("Force license (optional)", options=["(auto)", "SMB", "Pro", "Enterprise", "Ultimate"])
         submitted = st.form_submit_button("Get quote")
-
     if submitted:
         payload = {"kpis": int(kpis), "channels": int(channels), "countries": int(countries), "users": int(users)}
         if license_choice != "(auto)":
             payload["license"] = license_choice
             resp = post_json(f"{API_URL}/quote", payload)
-            st.subheader(f"License: {resp['license']} - Version {resp['version']}")
             st.metric("Total Monthly (USD)", money(resp['total_monthly']))
             st.metric("Annual (USD)", money(resp['total_annual']))
-            st.caption("No taxes. Currency USD.")
-            st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = resp
         else:
             resp = post_json(f"{API_URL}/quote", payload)
-            st.subheader(f"Recommended: {resp['recommended']}")
-            best = resp["quotes"][resp["recommended"]]
-            st.metric("Total Monthly (USD)", money(best["total_monthly"]))
-            st.metric("Annual (USD)", money(best["total_annual"]))
-            st.caption("No taxes. Currency USD.")
-            st.session_state["last_inputs"] = payload
-            st.session_state["last_quote"] = best
+            st.metric("Total Monthly (USD)", money(resp['quotes'][resp['recommended']]['total_monthly']))
+            st.metric("Annual (USD)", money(resp['quotes'][resp['recommended']]['total_annual']))
+            st.session_state["last_quote"] = resp
 
 # ---------- Tab 2 ----------
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
-        st.session_state["chat"] = [{
-            "role": "system",
-            "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
-                        "Tone - direct, helpful, confident. "
-                        "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning.")
-        }]
-
+        st.session_state["chat"] = [{"role": "system", "content": "You are the INCRMNTAL Sales Playbook, concise and practical."}]
     for m in st.session_state["chat"]:
         if m["role"] != "system":
             st.chat_message(m["role"]).write(m["content"])
-
     user_msg = st.chat_input("Ask anything - pricing, objections, next steps")
     if user_msg:
         st.session_state["chat"].append({"role": "user", "content": user_msg})
