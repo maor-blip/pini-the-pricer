@@ -7,6 +7,9 @@ from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 import extra_streamlit_components as stx  # simple cookie manager
 from openai import OpenAI
+import openai
+st.caption(f"✅ OpenAI SDK version in use: {openai.__version__}")
+
 
 # ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
