@@ -1,28 +1,11 @@
-import os, json, time, urllib.parse, subprocess
+import os, json, time, urllib.parse
 import requests
 import streamlit as st
-
-# ✅ Must be first Streamlit call
-st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
-
-# ---------- Ensure latest OpenAI SDK ----------
-try:
-    import openai
-    ver = tuple(map(int, openai.__version__.split(".")[:2]))
-    if ver < (1, 52):
-        st.warning(f"Upgrading old OpenAI SDK ({openai.__version__})...")
-        subprocess.run(["pip", "install", "--upgrade", "openai>=1.52.0"], check=False)
-        import importlib; importlib.reload(openai)
-except Exception:
-    subprocess.run(["pip", "install", "--upgrade", "openai>=1.52.0"], check=False)
-
-# ---------- Imports ----------
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
-import extra_streamlit_components as stx
-from openai import OpenAI
+import extra_streamlit_components as stx  # simple cookie manager
 
 # ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -30,8 +13,9 @@ GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
 RAW_APP_URL = (st.secrets.get("APP_URL") or "").strip()
-APP_URL = RAW_APP_URL.rstrip("/")
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+APP_URL = RAW_APP_URL.rstrip("/")  # normalize to no trailing slash
+
+st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
@@ -43,7 +27,7 @@ OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
-# ---------- Cookies ----------
+# ---------- Cookies: persistent login (no handshake) ----------
 cookie_mgr = stx.CookieManager(key="pini_cookies")
 COOKIE_NAME = "auth"
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
@@ -67,7 +51,7 @@ def get_login_cookie():
 def clear_login_cookie():
     cookie_mgr.delete(COOKIE_NAME, path="/")
 
-# ---------- Logout ----------
+# ---------- Logout via URL ----------
 def handle_forced_logout():
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
     if params.get("logout") == "1":
@@ -83,8 +67,9 @@ def handle_forced_logout():
         st.stop()
 handle_forced_logout()
 
-# ---------- Google login ----------
+# ---------- Google login - button only (no silent redirect) ----------
 def require_google_login():
+    # Resume from cookie
     if not st.session_state.get("user"):
         cached = get_login_cookie()
         if cached and isinstance(cached, dict):
@@ -112,6 +97,7 @@ def require_google_login():
     flow = Flow.from_client_config(client_config, scopes=OAUTH_SCOPES, redirect_uri=APP_URL)
 
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
+
     if "code" in params:
         qs = urllib.parse.urlencode(params, doseq=False)
         authorization_response = f"{APP_URL}?{qs}" if qs else APP_URL
@@ -128,9 +114,11 @@ def require_google_login():
         info = id_token.verify_oauth2_token(creds.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
         email = (info.get("email") or "").strip().lower()
         hd = (info.get("hd") or "").strip().lower()
+
         if (hd and hd != ALLOWED_DOMAIN) or not email.endswith(f"@{ALLOWED_DOMAIN}"):
             st.error(f"Access denied - use your {ALLOWED_DOMAIN} account.")
             st.stop()
+
         st.session_state["user"] = {"email": email, "name": info.get("name",""), "picture": info.get("picture","")}
         set_login_cookie(email, info.get("name",""), info.get("picture",""))
         st.query_params.clear()
@@ -147,6 +135,7 @@ def require_google_login():
     st.link_button("Continue with Google", auth_url)
     st.stop()
 
+# Require login before UI
 require_google_login()
 
 # ---------- Helpers ----------
@@ -171,19 +160,21 @@ def post_json(url, payload, retries=2):
             st.error(f"Request failed: {e}"); st.stop()
 
 def chat_with_playbook(messages):
-    key = OPENAI_API_KEY
+    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:
         st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
+
+    # Lazy import and init so a bad Python version doesn’t crash the whole app
     try:
-        client = OpenAI(api_key=key)  # no proxy params here
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.3,
-            messages=messages,
+            model="gpt-4o-mini", temperature=0.3, messages=messages,
         )
         return resp.choices[0].message.content
     except Exception as e:
-        st.error(f"OpenAI call failed: {e}")
+        st.error(f"OpenAI init or call failed: {e}")
+        st.info("Common cause on Render is Python 3.13. Set PYTHON_VERSION=3.11.9, clear build cache, redeploy.")
         st.stop()
 
 # ---------- Header ----------
@@ -203,7 +194,7 @@ st.caption(f"API: {API_URL}")
 # ---------- Tabs ----------
 tab1, tab2 = st.tabs(["Quote", "Sales assistant"])
 
-# ---------- Tab 1 ----------
+# ---------- Tab 1: Quote ----------
 with tab1:
     st.subheader("Get a price quote")
     with st.form("inputs", clear_on_submit=False):
@@ -216,34 +207,102 @@ with tab1:
             users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
         license_choice = st.selectbox("Force license (optional)", options=["(auto)", "SMB", "Pro", "Enterprise", "Ultimate"])
         submitted = st.form_submit_button("Get quote")
+
     if submitted:
         payload = {"kpis": int(kpis), "channels": int(channels), "countries": int(countries), "users": int(users)}
+
         if license_choice != "(auto)":
             payload["license"] = license_choice
             resp = post_json(f"{API_URL}/quote", payload)
+            st.subheader(f"License: {resp['license']} - Version {resp['version']}")
             st.metric("Total Monthly (USD)", money(resp['total_monthly']))
+            st.write(f"License discount: {int(round(resp.get('license_discount_pct', 0)*100))}% -> -{money(resp.get('license_discount_amount', 0))}")
             st.metric("Annual (USD)", money(resp['total_annual']))
+            st.divider()
+            for it in resp["items"]:
+                with st.expander(f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"):
+                    st.json(it["progressive_breakdown"])
+            st.caption("No taxes. Currency USD.")
+            st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = resp
         else:
             resp = post_json(f"{API_URL}/quote", payload)
-            st.metric("Total Monthly (USD)", money(resp['quotes'][resp['recommended']]['total_monthly']))
-            st.metric("Annual (USD)", money(resp['quotes'][resp['recommended']]['total_annual']))
-            st.session_state["last_quote"] = resp
+            st.subheader(f"Recommended: {resp['recommended']}")
+            best = resp["quotes"][resp['recommended']]
+            st.metric("Total Monthly (USD)", money(best['total_monthly']))
+            st.write(f"License discount: {int(round(best.get('license_discount_pct', 0)*100))}% -> -{money(best.get('license_discount_amount', 0))}")
+            st.metric("Annual (USD)", money(best['total_annual']))
+            st.divider()
+            for name, q in resp["quotes"].items():
+                st.write(f"### {name} - {money(q['total_monthly'])}/mo")
+                for it in q["items"]:
+                    st.write(f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}")
+            st.caption("No taxes. Currency USD.")
+            st.session_state["last_inputs"] = payload
+            st.session_state["last_quote"] = best
 
-# ---------- Tab 2 ----------
+# ---------- Tab 2: Sales assistant ----------
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
-        st.session_state["chat"] = [{"role": "system", "content": "You are the INCRMNTAL Sales Playbook, concise and practical."}]
+        st.session_state["chat"] = [{
+            "role": "system",
+            "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
+                        "Tone - direct, helpful, confident. "
+                        "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
+                        "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote.")
+        }]
+
     for m in st.session_state["chat"]:
         if m["role"] != "system":
             st.chat_message(m["role"]).write(m["content"])
+
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("Insert latest quote into chat"):
+            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
+            if not q or not inp:
+                st.warning("No quote yet. Go to the Quote tab, generate a quote, then try again.")
+            else:
+                lines = [
+                    "Latest quote summary:",
+                    f"- Inputs: KPIs {inp.get('kpis')}, Channels {inp.get('channels')}, Countries {inp.get('countries')}, Users {inp.get('users')}",
+                    f"- License: {q.get('license','recommended')}",
+                    f"- Total monthly: {money(q.get('total_monthly'))}",
+                    f"- Total annual: {money(q.get('total_annual'))}",
+                ]
+                st.session_state["chat"].append({"role": "user", "content": "\n".join(lines)})
+                st.rerun()
+    with colB:
+        if st.button("Create proposal draft"):
+            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
+            content = chat_with_playbook([
+                {"role": "system", "content": "You write clean, concise sales proposals for INCRMNTAL. Short bullets and straight talk."},
+                {"role": "user", "content":
+                    "Write a concise proposal for INCRMNTAL.\n"
+                    "Audience - senior marketing decision maker.\n"
+                    "Sections: Summary, Package and pricing, What you get, Why INCRMNTAL, Next steps.\n"
+                    "Use short paragraphs and bullets. No fluff.\n"
+                    f"Pricing context:\nLicense: {q.get('license','recommended')}\n"
+                    f"Total monthly: {money(q.get('total_monthly'))}\n"
+                    f"Total annual: {money(q.get('total_annual'))}\n"
+                    "State prices in USD monthly and annual exactly as provided above."
+                }
+            ])
+            st.session_state["proposal_md"] = content
+            st.success("Proposal draft ready below.")
+
     user_msg = st.chat_input("Ask anything - pricing, objections, next steps")
     if user_msg:
         st.session_state["chat"].append({"role": "user", "content": user_msg})
         reply = chat_with_playbook(st.session_state["chat"])
         st.session_state["chat"].append({"role": "assistant", "content": reply})
         st.rerun()
+
+    if st.session_state.get("proposal_md"):
+        st.markdown("### Proposal draft")
+        st.markdown(st.session_state["proposal_md"])
+        st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
 
 # ---------- Sidebar ----------
 with st.sidebar:
