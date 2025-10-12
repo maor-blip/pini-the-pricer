@@ -6,6 +6,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 import extra_streamlit_components as stx  # simple cookie manager
+from openai import OpenAI
 
 # ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -14,6 +15,8 @@ GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
 RAW_APP_URL = (st.secrets.get("APP_URL") or "").strip()
 APP_URL = RAW_APP_URL.rstrip("/")  # normalize to no trailing slash
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+CUSTOM_GPT_ID = st.secrets.get("CUSTOM_GPT_ID")  # <-- your GPT ID goes here (g-xxxxxxxxxxxxx)
 
 st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
@@ -27,7 +30,7 @@ OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
-# ---------- Cookies: persistent login (no handshake) ----------
+# ---------- Cookies: persistent login ----------
 cookie_mgr = stx.CookieManager(key="pini_cookies")
 COOKIE_NAME = "auth"
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
@@ -51,7 +54,7 @@ def get_login_cookie():
 def clear_login_cookie():
     cookie_mgr.delete(COOKIE_NAME, path="/")
 
-# ---------- Logout via URL ----------
+# ---------- Logout ----------
 def handle_forced_logout():
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
     if params.get("logout") == "1":
@@ -67,9 +70,8 @@ def handle_forced_logout():
         st.stop()
 handle_forced_logout()
 
-# ---------- Google login - button only (no silent redirect) ----------
+# ---------- Google login ----------
 def require_google_login():
-    # Resume from cookie
     if not st.session_state.get("user"):
         cached = get_login_cookie()
         if cached and isinstance(cached, dict):
@@ -159,22 +161,23 @@ def post_json(url, payload, retries=2):
                 time.sleep(2); continue
             st.error(f"Request failed: {e}"); st.stop()
 
+# ---------- Custom GPT Integration ----------
 def chat_with_playbook(messages):
-    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key:
+    if not OPENAI_API_KEY:
         st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
+    if not CUSTOM_GPT_ID:
+        st.error("Missing CUSTOM_GPT_ID in secrets"); st.stop()
 
-    # Lazy import and init so a bad Python version doesn’t crash the whole app
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=key)
+        client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.chat.completions.create(
-            model="gpt-4o-mini", temperature=0.3, messages=messages,
+            model=CUSTOM_GPT_ID,  # Use your custom GPT ID instead of base model
+            temperature=0.3,
+            messages=messages,
         )
         return resp.choices[0].message.content
     except Exception as e:
-        st.error(f"OpenAI init or call failed: {e}")
-        st.info("Common cause on Render is Python 3.13. Set PYTHON_VERSION=3.11.9, clear build cache, redeploy.")
+        st.error(f"Error communicating with your custom GPT: {e}")
         st.stop()
 
 # ---------- Header ----------
@@ -194,7 +197,7 @@ st.caption(f"API: {API_URL}")
 # ---------- Tabs ----------
 tab1, tab2 = st.tabs(["Quote", "Sales assistant"])
 
-# ---------- Tab 1: Quote ----------
+# ---------- Tab 1 ----------
 with tab1:
     st.subheader("Get a price quote")
     with st.form("inputs", clear_on_submit=False):
@@ -228,10 +231,10 @@ with tab1:
         else:
             resp = post_json(f"{API_URL}/quote", payload)
             st.subheader(f"Recommended: {resp['recommended']}")
-            best = resp["quotes"][resp['recommended']]
-            st.metric("Total Monthly (USD)", money(best['total_monthly']))
+            best = resp["quotes"][resp["recommended"]]
+            st.metric("Total Monthly (USD)", money(best["total_monthly"]))
             st.write(f"License discount: {int(round(best.get('license_discount_pct', 0)*100))}% -> -{money(best.get('license_discount_amount', 0))}")
-            st.metric("Annual (USD)", money(best['total_annual']))
+            st.metric("Annual (USD)", money(best["total_annual"]))
             st.divider()
             for name, q in resp["quotes"].items():
                 st.write(f"### {name} - {money(q['total_monthly'])}/mo")
@@ -241,7 +244,7 @@ with tab1:
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = best
 
-# ---------- Tab 2: Sales assistant ----------
+# ---------- Tab 2 ----------
 with tab2:
     st.subheader("INCRMNTAL Sales Playbook")
     if "chat" not in st.session_state:
