@@ -1,15 +1,16 @@
 import os, json, time, urllib.parse
 import requests
 import streamlit as st
+
+# ✅ must be first Streamlit command
+st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
+
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
-import extra_streamlit_components as stx  # simple cookie manager
+import extra_streamlit_components as stx
 from openai import OpenAI
-import openai
-st.caption(f"✅ OpenAI SDK version in use: {openai.__version__}")
-
 
 # ---------- Config ----------
 API_URL = st.secrets.get("PRICER_API_URL") or os.getenv("PRICER_API_URL") or "http://localhost:8000"
@@ -17,11 +18,8 @@ GOOGLE_CLIENT_ID = st.secrets.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
 ALLOWED_DOMAIN = (st.secrets.get("ALLOWED_DOMAIN") or "incrmntal.com").strip().lower()
 RAW_APP_URL = (st.secrets.get("APP_URL") or "").strip()
-APP_URL = RAW_APP_URL.rstrip("/")  # normalize to no trailing slash
+APP_URL = RAW_APP_URL.rstrip("/")
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-CUSTOM_GPT_ID = st.secrets.get("CUSTOM_GPT_ID")  # <-- your GPT ID goes here (g-xxxxxxxxxxxxx)
-
-st.set_page_config(page_title="Pini the Pricer", page_icon="🧮", layout="wide")
 
 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not APP_URL:
     st.error("Auth not configured. Set APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Secrets.")
@@ -33,7 +31,7 @@ OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
-# ---------- Cookies: persistent login ----------
+# ---------- Cookies ----------
 cookie_mgr = stx.CookieManager(key="pini_cookies")
 COOKIE_NAME = "auth"
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
@@ -71,6 +69,7 @@ def handle_forced_logout():
         st.query_params.clear()
         st.success("Logged out. Please sign in again.")
         st.stop()
+
 handle_forced_logout()
 
 # ---------- Google login ----------
@@ -164,40 +163,22 @@ def post_json(url, payload, retries=2):
                 time.sleep(2); continue
             st.error(f"Request failed: {e}"); st.stop()
 
-# ---------- Custom GPT Behavior Emulation ----------
 def chat_with_playbook(messages):
-    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    key = OPENAI_API_KEY
     if not key:
         st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
 
-    # Emulate the INCRMNTAL Sales Playbook GPT behavior
-    system_instructions = (
-        "You are the INCRMNTAL Sales Playbook. "
-        "You speak as an experienced marketing measurement strategist from INCRMNTAL. "
-        "Be concise, confident, and practical — never fluffy. "
-        "Your role: help salespeople explain INCRMNTAL’s pricing, ROI impact, and competitive advantages "
-        "over Measured, Recast, LiftLab, and Northbeam. "
-        "When creating proposals, you use short bullet points and always keep the tone human and intelligent. "
-        "You are honest and direct — if something isn’t relevant, say so clearly. "
-        "Never use jargon or buzzwords. Keep it useful."
-    )
-
-    # Always inject this at the top of the conversation
-    msgs = [{"role": "system", "content": system_instructions}] + messages
-
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=key)
+        client = OpenAI(api_key=key, http_client=None)
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",  # or "gpt-4o" if you want slightly smarter responses
+            model="gpt-4o-mini",
             temperature=0.3,
-            messages=msgs,
+            messages=messages,
         )
         return resp.choices[0].message.content
     except Exception as e:
         st.error(f"OpenAI call failed: {e}")
         st.stop()
-
 
 # ---------- Header ----------
 IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
@@ -232,18 +213,12 @@ with tab1:
 
     if submitted:
         payload = {"kpis": int(kpis), "channels": int(channels), "countries": int(countries), "users": int(users)}
-
         if license_choice != "(auto)":
             payload["license"] = license_choice
             resp = post_json(f"{API_URL}/quote", payload)
             st.subheader(f"License: {resp['license']} - Version {resp['version']}")
             st.metric("Total Monthly (USD)", money(resp['total_monthly']))
-            st.write(f"License discount: {int(round(resp.get('license_discount_pct', 0)*100))}% -> -{money(resp.get('license_discount_amount', 0))}")
             st.metric("Annual (USD)", money(resp['total_annual']))
-            st.divider()
-            for it in resp["items"]:
-                with st.expander(f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"):
-                    st.json(it["progressive_breakdown"])
             st.caption("No taxes. Currency USD.")
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = resp
@@ -252,13 +227,7 @@ with tab1:
             st.subheader(f"Recommended: {resp['recommended']}")
             best = resp["quotes"][resp["recommended"]]
             st.metric("Total Monthly (USD)", money(best["total_monthly"]))
-            st.write(f"License discount: {int(round(best.get('license_discount_pct', 0)*100))}% -> -{money(best.get('license_discount_amount', 0))}")
             st.metric("Annual (USD)", money(best["total_annual"]))
-            st.divider()
-            for name, q in resp["quotes"].items():
-                st.write(f"### {name} - {money(q['total_monthly'])}/mo")
-                for it in q["items"]:
-                    st.write(f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}")
             st.caption("No taxes. Currency USD.")
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = best
@@ -271,48 +240,12 @@ with tab2:
             "role": "system",
             "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
                         "Tone - direct, helpful, confident. "
-                        "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
-                        "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote.")
+                        "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning.")
         }]
 
     for m in st.session_state["chat"]:
         if m["role"] != "system":
             st.chat_message(m["role"]).write(m["content"])
-
-    colA, colB = st.columns(2)
-    with colA:
-        if st.button("Insert latest quote into chat"):
-            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
-            if not q or not inp:
-                st.warning("No quote yet. Go to the Quote tab, generate a quote, then try again.")
-            else:
-                lines = [
-                    "Latest quote summary:",
-                    f"- Inputs: KPIs {inp.get('kpis')}, Channels {inp.get('channels')}, Countries {inp.get('countries')}, Users {inp.get('users')}",
-                    f"- License: {q.get('license','recommended')}",
-                    f"- Total monthly: {money(q.get('total_monthly'))}",
-                    f"- Total annual: {money(q.get('total_annual'))}",
-                ]
-                st.session_state["chat"].append({"role": "user", "content": "\n".join(lines)})
-                st.rerun()
-    with colB:
-        if st.button("Create proposal draft"):
-            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
-            content = chat_with_playbook([
-                {"role": "system", "content": "You write clean, concise sales proposals for INCRMNTAL. Short bullets and straight talk."},
-                {"role": "user", "content":
-                    "Write a concise proposal for INCRMNTAL.\n"
-                    "Audience - senior marketing decision maker.\n"
-                    "Sections: Summary, Package and pricing, What you get, Why INCRMNTAL, Next steps.\n"
-                    "Use short paragraphs and bullets. No fluff.\n"
-                    f"Pricing context:\nLicense: {q.get('license','recommended')}\n"
-                    f"Total monthly: {money(q.get('total_monthly'))}\n"
-                    f"Total annual: {money(q.get('total_annual'))}\n"
-                    "State prices in USD monthly and annual exactly as provided above."
-                }
-            ])
-            st.session_state["proposal_md"] = content
-            st.success("Proposal draft ready below.")
 
     user_msg = st.chat_input("Ask anything - pricing, objections, next steps")
     if user_msg:
@@ -320,11 +253,6 @@ with tab2:
         reply = chat_with_playbook(st.session_state["chat"])
         st.session_state["chat"].append({"role": "assistant", "content": reply})
         st.rerun()
-
-    if st.session_state.get("proposal_md"):
-        st.markdown("### Proposal draft")
-        st.markdown(st.session_state["proposal_md"])
-        st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
 
 # ---------- Sidebar ----------
 with st.sidebar:
