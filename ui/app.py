@@ -138,7 +138,9 @@ def require_google_login():
         components.html(
             f"""
             <script>
-              window.location.href = {json.dumps(auth_url)};
+              const url = {json.dumps(auth_url)};
+              // Streamlit components run in an iframe. We must navigate the top window.
+              window.top.location.href = url;
             </script>
             """,
             height=0,
