@@ -196,7 +196,7 @@ tab1, tab2 = st.tabs(["Quote", "Sales assistant"])
 
 # ---------- Tab 1: Quote ----------
 with tab1:
-    st.subheader("Get a price quote")
+    st.subheader("TESTING Playground")
     with st.form("inputs", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
