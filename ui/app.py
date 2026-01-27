@@ -55,6 +55,19 @@ def clear_login_cookie():
 # ---------- Logout via URL ----------
 def handle_forced_logout():
     params = {k: (v[0] if isinstance(v, list) else v) for k, v in dict(st.query_params).items()}
+        # Debug: show what came back from Google
+    # Remove these two lines after we fix the issue.
+    st.caption("OAuth return params (debug)")
+    st.code(dict(st.query_params))
+
+    # If Google returns an OAuth error, surface it instead of looping silently
+    if "error" in params:
+        st.error("Google OAuth returned an error.")
+        st.write("error:", params.get("error"))
+        st.write("error_description:", params.get("error_description"))
+        st.write("error_subtype:", params.get("error_subtype"))
+        st.stop()
+
     if params.get("logout") == "1":
         st.session_state.pop("user", None)
         clear_login_cookie()
