@@ -1,6 +1,7 @@
 import os, json, time, urllib.parse
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -130,9 +131,22 @@ def require_google_login():
         prompt="select_account",
         hd=ALLOWED_DOMAIN,
     )
+
     st.title("Pini the Pricer")
     st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
-    st.link_button("Continue with Google", auth_url)
+
+    # Same-tab redirect (instead of st.link_button opening a new tab)
+    if st.button("Continue with Google"):
+        components.html(
+            f"""
+            <script>
+              window.location.href = {json.dumps(auth_url)};
+            </script>
+            """,
+            height=0,
+        )
+        st.stop()
+
     st.stop()
 
 # Require login before UI
