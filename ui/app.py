@@ -134,18 +134,24 @@ def require_google_login():
     st.title("Pini the Pricer")
     st.write(f"Sign in with your {ALLOWED_DOMAIN} Google account.")
 
-    if st.button("Continue with Google"):
-        components.html(
-            f"""
-            <script>
-              const url = {json.dumps(auth_url)};
-              // Streamlit components run in an iframe. We must navigate the top window.
-              window.top.location.href = url;
-            </script>
-            """,
-            height=0,
-        )
-        st.stop()
+    st.markdown(
+        f"""
+        <a href="{auth_url}" target="_self" style="text-decoration:none;">
+          <button style="
+            padding:0.5rem 1rem;
+            border-radius:0.5rem;
+            border:1px solid rgba(49,51,63,0.2);
+            background:white;
+            cursor:pointer;
+            font-size:1rem;
+          ">
+            Continue with Google
+          </button>
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
     st.stop()
 
