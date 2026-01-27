@@ -166,8 +166,6 @@ def require_google_login():
     )
     st.stop()
 
-    st.stop()
-
 
 # Require login before UI
 require_google_login()
