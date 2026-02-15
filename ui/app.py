@@ -184,7 +184,6 @@ def chat_with_playbook(messages):
         st.stop()
 
 def find_item(items, key_name: str):
-    """Find a line item by key."""
     if not items:
         return None
     for it in items:
@@ -192,48 +191,44 @@ def find_item(items, key_name: str):
             return it
     return None
 
-def marginal_last_unit_cost(payload: dict, license_name: str, item_key: str, current_item: dict):
+def last_unit_cost_always(payload: dict, license_name: str, item_key: str):
     """
-    Returns (unit_label, unit_cost) for the last unit requested of item_key,
-    but only if requested > included.
-    We compute it as: line_total(N) - line_total(N-1) for that same item.
+    Always compute a 'last unit' cost:
+    - If requested >= 1: unit #requested cost = quote(N) - quote(N-1)
+    - If requested == 0: unit #1 cost = quote(1) - quote(0)
+    This works whether or not the unit is 'included'.
     """
-    if not current_item:
+    if item_key not in payload:
         return None
 
-    requested = int(current_item.get("requested", 0) or 0)
-    included = int(current_item.get("included", 0) or 0)
+    n_requested = int(payload.get(item_key, 0) or 0)
+    target_n = n_requested if n_requested >= 1 else 1
+    prev_n = target_n - 1
 
-    # Only meaningful when you are actually in add-on territory
-    if requested <= included:
-        return None
-    if requested <= 0:
-        return None
+    curr_payload = dict(payload)
+    curr_payload["license"] = license_name
+    curr_payload[item_key] = target_n
 
     prev_payload = dict(payload)
-    if item_key not in prev_payload:
-        return None
-    if int(prev_payload[item_key]) <= 0:
-        return None
-
-    prev_payload[item_key] = int(prev_payload[item_key]) - 1
     prev_payload["license"] = license_name
+    prev_payload[item_key] = prev_n
 
+    curr_quote = post_json(f"{API_URL}/quote", curr_payload)
     prev_quote = post_json(f"{API_URL}/quote", prev_payload)
-    # When license is forced, response shape is the single quote object
+
+    curr_item = find_item(curr_quote.get("items", []), item_key)
     prev_item = find_item(prev_quote.get("items", []), item_key)
-    if not prev_item:
+    if not curr_item or not prev_item:
         return None
 
     try:
-        curr_line = float(current_item.get("line_total", 0) or 0)
+        curr_line = float(curr_item.get("line_total", 0) or 0)
         prev_line = float(prev_item.get("line_total", 0) or 0)
         delta = curr_line - prev_line
     except Exception:
         return None
 
-    # Label as the "Nth" unit overall (example: channel #10)
-    unit_label = f"{item_key} #{requested}"
+    unit_label = f"{item_key} #{target_n}"
     return unit_label, delta
 
 # ---------- Header ----------
@@ -290,19 +285,14 @@ with tab1:
             )
             st.metric("Annual (USD)", money(resp["total_annual"]))
 
-            # NEW: show marginal cost of the last add-on unit for each relevant line item
+            # NEW: always show unit cost for the last unit (even if included)
             st.divider()
-            st.markdown("#### Add-on marginal cost (last unit)")
-            any_marginal = False
+            st.markdown("#### Unit cost (last unit)")
             for key_name in ["kpis", "channels", "countries", "users"]:
-                curr_item = find_item(resp.get("items", []), key_name)
-                result = marginal_last_unit_cost(payload, resp.get("license", license_choice), key_name, curr_item)
+                result = last_unit_cost_always(payload, resp.get("license", license_choice), key_name)
                 if result:
-                    any_marginal = True
                     unit_label, delta = result
                     st.write(f"- {unit_label}: {money(delta)}/mo")
-            if not any_marginal:
-                st.caption("No add-ons beyond included amounts for this quote.")
 
             st.divider()
             for it in resp["items"]:
@@ -326,27 +316,18 @@ with tab1:
             )
             st.metric("Annual (USD)", money(best["total_annual"]))
 
-            # NEW: show marginal cost of the last add-on unit for each relevant line item
-            # We compute it by forcing the recommended license and comparing N vs N-1.
+            # NEW: always show unit cost for the last unit under the recommended license
             st.divider()
-            st.markdown("#### Add-on marginal cost (last unit)")
-            any_marginal = False
+            st.markdown("#### Unit cost (last unit)")
             forced_license = resp["recommended"]
-
-            # Build a forced-license current quote (so we have items guaranteed aligned with forced comparison)
             forced_payload = dict(payload)
             forced_payload["license"] = forced_license
-            forced_current = post_json(f"{API_URL}/quote", forced_payload)
 
             for key_name in ["kpis", "channels", "countries", "users"]:
-                curr_item = find_item(forced_current.get("items", []), key_name)
-                result = marginal_last_unit_cost(forced_payload, forced_license, key_name, curr_item)
+                result = last_unit_cost_always(forced_payload, forced_license, key_name)
                 if result:
-                    any_marginal = True
                     unit_label, delta = result
                     st.write(f"- {unit_label}: {money(delta)}/mo")
-            if not any_marginal:
-                st.caption("No add-ons beyond included amounts for this quote.")
 
             st.divider()
             for name, q in resp["quotes"].items():
