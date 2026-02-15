@@ -178,7 +178,7 @@ def last_unit_cost_display(item: dict) -> float:
 
 
 def render_unit_costs_block(quote_obj: dict):
-    st.subheader("Unit cost (last unit)")
+    st.subheader("Add On Costs")
     items = quote_obj.get("items", []) or []
 
     if not items:
