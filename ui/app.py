@@ -153,29 +153,88 @@ def post_json(url, payload, retries=2):
             try:
                 return r.json()
             except Exception:
-                st.error("API returned non-JSON response"); st.code(r.text); st.stop()
+                st.error("API returned non-JSON response")
+                st.code(r.text)
+                st.stop()
         except requests.exceptions.RequestException as e:
             if attempt < retries:
-                time.sleep(2); continue
-            st.error(f"Request failed: {e}"); st.stop()
+                time.sleep(2)
+                continue
+            st.error(f"Request failed: {e}")
+            st.stop()
 
 def chat_with_playbook(messages):
     key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:
-        st.error("Missing OPENAI_API_KEY in secrets"); st.stop()
+        st.error("Missing OPENAI_API_KEY in secrets")
+        st.stop()
 
-    # Lazy import and init so a bad Python version doesn’t crash the whole app
     try:
         from openai import OpenAI
         client = OpenAI(api_key=key)
         resp = client.chat.completions.create(
-            model="gpt-4o-mini", temperature=0.3, messages=messages,
+            model="gpt-4o-mini",
+            temperature=0.3,
+            messages=messages,
         )
         return resp.choices[0].message.content
     except Exception as e:
         st.error(f"OpenAI init or call failed: {e}")
         st.info("Common cause on Render is Python 3.13. Set PYTHON_VERSION=3.11.9, clear build cache, redeploy.")
         st.stop()
+
+def find_item(items, key_name: str):
+    """Find a line item by key."""
+    if not items:
+        return None
+    for it in items:
+        if str(it.get("key", "")).lower() == key_name.lower():
+            return it
+    return None
+
+def marginal_last_unit_cost(payload: dict, license_name: str, item_key: str, current_item: dict):
+    """
+    Returns (unit_label, unit_cost) for the last unit requested of item_key,
+    but only if requested > included.
+    We compute it as: line_total(N) - line_total(N-1) for that same item.
+    """
+    if not current_item:
+        return None
+
+    requested = int(current_item.get("requested", 0) or 0)
+    included = int(current_item.get("included", 0) or 0)
+
+    # Only meaningful when you are actually in add-on territory
+    if requested <= included:
+        return None
+    if requested <= 0:
+        return None
+
+    prev_payload = dict(payload)
+    if item_key not in prev_payload:
+        return None
+    if int(prev_payload[item_key]) <= 0:
+        return None
+
+    prev_payload[item_key] = int(prev_payload[item_key]) - 1
+    prev_payload["license"] = license_name
+
+    prev_quote = post_json(f"{API_URL}/quote", prev_payload)
+    # When license is forced, response shape is the single quote object
+    prev_item = find_item(prev_quote.get("items", []), item_key)
+    if not prev_item:
+        return None
+
+    try:
+        curr_line = float(current_item.get("line_total", 0) or 0)
+        prev_line = float(prev_item.get("line_total", 0) or 0)
+        delta = curr_line - prev_line
+    except Exception:
+        return None
+
+    # Label as the "Nth" unit overall (example: channel #10)
+    unit_label = f"{item_key} #{requested}"
+    return unit_label, delta
 
 # ---------- Header ----------
 IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
@@ -205,38 +264,97 @@ with tab1:
         with col2:
             countries = st.number_input("Countries", min_value=0, value=1, step=1)
             users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
-        license_choice = st.selectbox("Force license (optional)", options=["(auto)", "SMB", "Pro", "Enterprise", "Ultimate"])
+        license_choice = st.selectbox(
+            "Force license (optional)",
+            options=["(auto)", "SMB", "Pro", "Enterprise", "Ultimate"]
+        )
         submitted = st.form_submit_button("Get quote")
 
     if submitted:
-        payload = {"kpis": int(kpis), "channels": int(channels), "countries": int(countries), "users": int(users)}
+        payload = {
+            "kpis": int(kpis),
+            "channels": int(channels),
+            "countries": int(countries),
+            "users": int(users),
+        }
 
+        # ---------------- Forced license ----------------
         if license_choice != "(auto)":
             payload["license"] = license_choice
             resp = post_json(f"{API_URL}/quote", payload)
+
             st.subheader(f"License: {resp['license']} - Version {resp['version']}")
-            st.metric("Total Monthly (USD)", money(resp['total_monthly']))
-            st.write(f"License discount: {int(round(resp.get('license_discount_pct', 0)*100))}% -> -{money(resp.get('license_discount_amount', 0))}")
-            st.metric("Annual (USD)", money(resp['total_annual']))
+            st.metric("Total Monthly (USD)", money(resp["total_monthly"]))
+            st.write(
+                f"License discount: {int(round(resp.get('license_discount_pct', 0) * 100))}% -> -{money(resp.get('license_discount_amount', 0))}"
+            )
+            st.metric("Annual (USD)", money(resp["total_annual"]))
+
+            # NEW: show marginal cost of the last add-on unit for each relevant line item
+            st.divider()
+            st.markdown("#### Add-on marginal cost (last unit)")
+            any_marginal = False
+            for key_name in ["kpis", "channels", "countries", "users"]:
+                curr_item = find_item(resp.get("items", []), key_name)
+                result = marginal_last_unit_cost(payload, resp.get("license", license_choice), key_name, curr_item)
+                if result:
+                    any_marginal = True
+                    unit_label, delta = result
+                    st.write(f"- {unit_label}: {money(delta)}/mo")
+            if not any_marginal:
+                st.caption("No add-ons beyond included amounts for this quote.")
+
             st.divider()
             for it in resp["items"]:
-                with st.expander(f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"):
-                    st.json(it["progressive_breakdown"])
+                with st.expander(
+                    f"{it['key'].title()} - requested {it['requested']} (included {it['included']}) - line {money(it['line_total'])}"
+                ):
+                    st.json(it.get("progressive_breakdown"))
             st.caption("No taxes. Currency USD.")
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = resp
+
+        # ---------------- Recommended license ----------------
         else:
             resp = post_json(f"{API_URL}/quote", payload)
+
             st.subheader(f"Recommended: {resp['recommended']}")
-            best = resp["quotes"][resp['recommended']]
-            st.metric("Total Monthly (USD)", money(best['total_monthly']))
-            st.write(f"License discount: {int(round(best.get('license_discount_pct', 0)*100))}% -> -{money(best.get('license_discount_amount', 0))}")
-            st.metric("Annual (USD)", money(best['total_annual']))
+            best = resp["quotes"][resp["recommended"]]
+            st.metric("Total Monthly (USD)", money(best["total_monthly"]))
+            st.write(
+                f"License discount: {int(round(best.get('license_discount_pct', 0) * 100))}% -> -{money(best.get('license_discount_amount', 0))}"
+            )
+            st.metric("Annual (USD)", money(best["total_annual"]))
+
+            # NEW: show marginal cost of the last add-on unit for each relevant line item
+            # We compute it by forcing the recommended license and comparing N vs N-1.
+            st.divider()
+            st.markdown("#### Add-on marginal cost (last unit)")
+            any_marginal = False
+            forced_license = resp["recommended"]
+
+            # Build a forced-license current quote (so we have items guaranteed aligned with forced comparison)
+            forced_payload = dict(payload)
+            forced_payload["license"] = forced_license
+            forced_current = post_json(f"{API_URL}/quote", forced_payload)
+
+            for key_name in ["kpis", "channels", "countries", "users"]:
+                curr_item = find_item(forced_current.get("items", []), key_name)
+                result = marginal_last_unit_cost(forced_payload, forced_license, key_name, curr_item)
+                if result:
+                    any_marginal = True
+                    unit_label, delta = result
+                    st.write(f"- {unit_label}: {money(delta)}/mo")
+            if not any_marginal:
+                st.caption("No add-ons beyond included amounts for this quote.")
+
             st.divider()
             for name, q in resp["quotes"].items():
                 st.write(f"### {name} - {money(q['total_monthly'])}/mo")
                 for it in q["items"]:
-                    st.write(f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}")
+                    st.write(
+                        f"- {it['key'].title()}: {it['requested']} (incl {it['included']}) -> {money(it['line_total'])}"
+                    )
             st.caption("No taxes. Currency USD.")
             st.session_state["last_inputs"] = payload
             st.session_state["last_quote"] = best
@@ -247,10 +365,12 @@ with tab2:
     if "chat" not in st.session_state:
         st.session_state["chat"] = [{
             "role": "system",
-            "content": ("You are the INCRMNTAL Sales Playbook. Be concise and practical. "
-                        "Tone - direct, helpful, confident. "
-                        "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
-                        "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote.")
+            "content": (
+                "You are the INCRMNTAL Sales Playbook. Be concise and practical. "
+                "Tone - direct, helpful, confident. "
+                "Skills - pricing explanation, handling objections, ROI framing, competitor comparisons, next-step planning. "
+                "When asked for a quote, either request the missing numbers or ask the user to insert the latest quote."
+            )
         }]
 
     for m in st.session_state["chat"]:
@@ -260,7 +380,8 @@ with tab2:
     colA, colB = st.columns(2)
     with colA:
         if st.button("Insert latest quote into chat"):
-            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote")
+            inp = st.session_state.get("last_inputs")
             if not q or not inp:
                 st.warning("No quote yet. Go to the Quote tab, generate a quote, then try again.")
             else:
@@ -275,7 +396,8 @@ with tab2:
                 st.rerun()
     with colB:
         if st.button("Create proposal draft"):
-            q = st.session_state.get("last_quote"); inp = st.session_state.get("last_inputs")
+            q = st.session_state.get("last_quote")
+            inp = st.session_state.get("last_inputs")
             content = chat_with_playbook([
                 {"role": "system", "content": "You write clean, concise sales proposals for INCRMNTAL. Short bullets and straight talk."},
                 {"role": "user", "content":
@@ -302,7 +424,12 @@ with tab2:
     if st.session_state.get("proposal_md"):
         st.markdown("### Proposal draft")
         st.markdown(st.session_state["proposal_md"])
-        st.download_button("Download proposal.md", st.session_state["proposal_md"].encode("utf-8"), "proposal.md", "text/markdown")
+        st.download_button(
+            "Download proposal.md",
+            st.session_state["proposal_md"].encode("utf-8"),
+            "proposal.md",
+            "text/markdown"
+        )
 
 # ---------- Sidebar ----------
 with st.sidebar:
