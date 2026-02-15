@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 import streamlit as st
 
@@ -10,9 +9,74 @@ import streamlit as st
 PRICER_API_URL = os.getenv("PRICER_API_URL", "http://localhost:8000").rstrip("/")
 APP_TITLE = os.getenv("PRICER_APP_TITLE", "Get a price quote")
 
-# Optional lightweight access gate
-# If PRICER_ACCESS_KEY is set, users must enter it once per session.
-PRICER_ACCESS_KEY = os.getenv("PRICER_ACCESS_KEY", "").strip()
+
+# ----------------------------
+# Auth
+# ----------------------------
+def _get_access_key() -> str:
+    """
+    Supports multiple names so you can keep your existing Render env var.
+    Pick ONE in Render and you're good.
+    """
+    candidates = [
+        os.getenv("PRICER_ACCESS_KEY", ""),
+        os.getenv("APP_ACCESS_KEY", ""),
+        os.getenv("APP_PASSWORD", ""),
+        os.getenv("STREAMLIT_PASSWORD", ""),
+    ]
+    for v in candidates:
+        if v and v.strip():
+            return v.strip()
+
+    # Also allow Streamlit secrets if you're using those
+    try:
+        v = st.secrets.get("PRICER_ACCESS_KEY", "")  # type: ignore[attr-defined]
+        if v and str(v).strip():
+            return str(v).strip()
+    except Exception:
+        pass
+
+    try:
+        v = st.secrets.get("APP_PASSWORD", "")  # type: ignore[attr-defined]
+        if v and str(v).strip():
+            return str(v).strip()
+    except Exception:
+        pass
+
+    return ""
+
+
+def require_login():
+    access_key = _get_access_key()
+
+    # If no key is configured, we do NOT block (useful for local dev),
+    # but we show a loud warning because you said "open to the world" is bad.
+    if not access_key:
+        st.warning(
+            "Auth is NOT configured. This app is publicly accessible.\n\n"
+            "Set one of these env vars in Render: PRICER_ACCESS_KEY, APP_ACCESS_KEY, APP_PASSWORD, STREAMLIT_PASSWORD."
+        )
+        return
+
+    if st.session_state.get("authed"):
+        return
+
+    st.title(APP_TITLE)
+    st.caption(f"API: {PRICER_API_URL}")
+
+    st.subheader("Sign in")
+    entered = st.text_input("Access key", type="password")
+
+    col_a, col_b = st.columns([1, 5])
+    with col_a:
+        if st.button("Sign in", use_container_width=True):
+            if entered.strip() == access_key:
+                st.session_state["authed"] = True
+                st.rerun()
+            else:
+                st.error("Wrong key.")
+
+    st.stop()
 
 
 # ----------------------------
@@ -32,88 +96,46 @@ def call_quote_api(payload: dict) -> dict:
     return r.json()
 
 
-def normalize_unit_prices_from_quote(quote_dict: dict) -> dict:
+def last_unit_list_price(item: dict) -> float:
     """
-    Build a fallback unit price map from the quote payload itself.
-    Keys are: kpis, channels, countries, users
+    Your original issue:
+    - When progressive_breakdown is empty (no add-ons), UI showed 0.
+    The correct "unit cost (last unit)" for packages with no add-ons is still the unit_price.
+
+    This function always returns item['unit_price'] when present and > 0.
+    Only falls back to progressive breakdown if needed.
     """
-    out = {}
-    for item in quote_dict.get("items", []):
-        k = item.get("key")
-        v = item.get("unit_price")
-        if isinstance(k, str) and isinstance(v, (int, float)) and v > 0:
-            out[k.strip().lower()] = float(v)
-    return out
+    v = item.get("unit_price")
+    if isinstance(v, (int, float)) and v > 0:
+        return float(v)
 
-
-def last_unit_list_price(item: dict, fallback_unit_prices: dict | None = None) -> float:
-    """
-    Returns the LIST price of the 'last' unit (not what they pay after inclusions).
-    Always returns a price for at least unit #1.
-
-    Fixes your issue:
-    - If there are no add-ons defined (trail is empty) the UI should still show the unit cost.
-    - We must not "accept" a 0 from progressive structures and stop early.
-
-    Primary source of truth is item['unit_price'] (your backend includes it per license).
-    Secondary: progressive breakdown if it has meaningful list/base price.
-    Final: fallback_unit_prices map.
-    """
     requested = int(item.get("requested", 0) or 0)
     target_unit = max(1, requested)
-
-    def pick_positive(d: dict, keys: list[str]) -> float | None:
-        for k in keys:
-            v = d.get(k)
-            if isinstance(v, (int, float)) and v > 0:
-                return float(v)
-        return None
-
-    # 1) Direct item prices (backend sends unit_price always)
-    direct = pick_positive(item, ["unit_price", "base_unit_price", "list_unit_price"])
-    if direct is not None:
-        return direct
-
-    # 2) progressive_breakdown can be list or dict, try to locate a unit and read a positive price
     pb = item.get("progressive_breakdown")
 
-    if isinstance(pb, dict):
-        entry = pb.get(str(target_unit)) or pb.get(target_unit)
-        if isinstance(entry, dict):
-            picked = pick_positive(entry, ["unit_price", "list_unit_price", "base_unit_price"])
-            if picked is not None:
-                return picked
-
+    # If breakdown exists, try to infer list unit price from it
+    # (your backend trail uses unit_price and price_after_discount)
     if isinstance(pb, list) and pb:
-        # Try to match by unit index keys
+        # If there is an entry for the target unit, use its unit_price if present
         for row in pb:
             if not isinstance(row, dict):
                 continue
-            unit_idx = row.get("unit") or row.get("unit_number") or row.get("n") or row.get("index") or row.get("idx")
+            unit_n = row.get("unit_number") or row.get("unit") or row.get("n")
             try:
-                unit_idx = int(unit_idx)
+                unit_n = int(unit_n)
             except Exception:
-                unit_idx = None
+                unit_n = None
+            if unit_n == target_unit:
+                uv = row.get("unit_price")
+                if isinstance(uv, (int, float)) and uv > 0:
+                    return float(uv)
 
-            if unit_idx == target_unit:
-                picked = pick_positive(row, ["unit_price", "list_unit_price", "base_unit_price"])
-                if picked is not None:
-                    return picked
-
-        # last row fallback
+        # Otherwise use the last row's unit_price as best effort
         last_row = pb[-1]
         if isinstance(last_row, dict):
-            picked = pick_positive(last_row, ["unit_price", "list_unit_price", "base_unit_price"])
-            if picked is not None:
-                return picked
-
-    # 3) Final fallback: provided unit_prices map
-    if isinstance(fallback_unit_prices, dict):
-        key = item.get("key") or item.get("code") or item.get("slug") or item.get("name")
-        if isinstance(key, str):
-            v = fallback_unit_prices.get(key.strip().lower())
-            if isinstance(v, (int, float)) and v > 0:
-                return float(v)
+            uv = last_row.get("unit_price")
+            if isinstance(uv, (int, float)) and uv > 0:
+                return float(uv)
 
     return 0.0
 
@@ -123,42 +145,86 @@ def unit_number_label(item: dict) -> int:
     return max(1, requested)
 
 
-def require_access_key_if_configured():
-    """
-    Simple, reliable gate:
-    - If PRICER_ACCESS_KEY is empty: no gate.
-    - If set: show a sign-in box and block the app until correct.
-    """
-    if not PRICER_ACCESS_KEY:
+def render_unit_costs_block(quote_obj: dict):
+    st.subheader("Unit cost (last unit)")
+    items = quote_obj.get("items", []) or []
+
+    if not items:
+        st.info("No items returned.")
         return
 
-    if st.session_state.get("authed", False):
+    lines = []
+    for item in items:
+        key = (item.get("key") or "").strip().lower()
+        unit_n = unit_number_label(item)
+        price = last_unit_list_price(item)
+        lines.append(f"- {key} #{unit_n}: {money(price)}/mo")
+
+    st.markdown("\n".join(lines))
+
+
+def render_quote_summary(quote_obj: dict):
+    total_monthly = quote_obj.get("total_monthly", 0.0)
+    total_annual = quote_obj.get("total_annual", 0.0)
+    lic_disc_pct = quote_obj.get("license_discount_pct", 0.0)
+    lic_disc_amt = quote_obj.get("license_discount_amount", 0.0)
+
+    st.write("**Total Monthly (USD)**")
+    st.write(f"### {money(total_monthly)}")
+
+    try:
+        pct = int(float(lic_disc_pct) * 100)
+    except Exception:
+        pct = 0
+
+    st.write(f"License discount: {pct}% -> {money(lic_disc_amt)}")
+    st.write("")
+    st.write("**Annual (USD)**")
+    st.write(f"### {money(total_annual)}")
+
+
+def render_all_licenses_table(result: dict, recommended: str):
+    """
+    Shows what you said you miss:
+    - totals for every license, not only the recommended one
+    """
+    quotes = result.get("quotes", {}) or {}
+    if not quotes:
         return
 
-    st.title(APP_TITLE)
-    st.caption(f"API: {PRICER_API_URL}")
+    rows = []
+    for lic_name, q in quotes.items():
+        rows.append(
+            {
+                "License": lic_name,
+                "Monthly": q.get("total_monthly", 0.0),
+                "Annual": q.get("total_annual", 0.0),
+                "Discount %": q.get("license_discount_pct", 0.0),
+            }
+        )
 
-    st.subheader("Sign in")
-    st.write("Enter the access key to continue.")
-    key = st.text_input("Access key", type="password")
+    # Sort by monthly ascending
+    rows.sort(key=lambda r: float(r.get("Monthly", 0.0) or 0.0))
 
-    cols = st.columns([1, 3])
-    with cols[0]:
-        if st.button("Sign in", use_container_width=True):
-            if key.strip() == PRICER_ACCESS_KEY:
-                st.session_state["authed"] = True
-                st.rerun()
-            else:
-                st.error("Nope. Wrong key.")
+    st.subheader("All licenses")
+    for r in rows:
+        r["Monthly"] = money(r["Monthly"])
+        r["Annual"] = money(r["Annual"])
+        try:
+            r["Discount %"] = f"{int(float(r['Discount %']) * 100)}%"
+        except Exception:
+            r["Discount %"] = "0%"
 
-    st.stop()
+    st.table(rows)
+
+    st.caption(f"Recommended: {recommended}")
 
 
 # ----------------------------
 # UI
 # ----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
-require_access_key_if_configured()
+require_login()
 
 st.title(APP_TITLE)
 st.caption(f"API: {PRICER_API_URL}")
@@ -166,16 +232,17 @@ st.caption(f"API: {PRICER_API_URL}")
 tab_quote, tab_sales = st.tabs(["Quote", "Sales assistant"])
 
 with tab_quote:
-    left, right = st.columns(2)
+    st.subheader("Inputs")
 
-    with left:
-        st.subheader("Inputs")
-
+    # 4 equal columns fixes the alignment problem you showed
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
         kpis = st.number_input("KPIs", min_value=0, value=1, step=1)
+    with c2:
         channels = st.number_input("Channels", min_value=0, value=1, step=1)
-
-    with right:
+    with c3:
         countries = st.number_input("Countries", min_value=0, value=1, step=1)
+    with c4:
         users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
 
     st.write("")
@@ -208,95 +275,83 @@ with tab_quote:
 
         st.divider()
 
-        # Two possible shapes:
-        # 1) recommendation: {"recommended": "...", "quotes": {...}}
-        # 2) direct quote: {"license": "...", "items": [...], ...}
+        # If API returns recommendation mode, show all licenses + the recommended license details
         if "recommended" in result and "quotes" in result:
-            recommended = result.get("recommended")
-            st.subheader(f"Recommended: {recommended}")
+            recommended = result.get("recommended", "")
+            render_all_licenses_table(result, recommended)
 
-            q = result["quotes"].get(recommended)
-            if not q:
-                st.error("Recommendation returned, but recommended quote missing. That should not happen.")
-                st.json(result)
+            quote_obj = (result.get("quotes") or {}).get(recommended)
+            if not quote_obj:
+                st.error("Recommendation returned, but the recommended quote is missing.")
+                with st.expander("Debug", expanded=False):
+                    st.json(result)
                 st.stop()
 
-            quote_obj = q
+            st.divider()
+            st.subheader(f"Recommended license details: {recommended}")
+            render_quote_summary(quote_obj)
+            st.divider()
+            render_unit_costs_block(quote_obj)
+
+            # Optional per-license breakdown (handy for sales)
+            with st.expander("Compare line items by license", expanded=False):
+                quotes = result.get("quotes", {}) or {}
+                for lic_name, q in quotes.items():
+                    st.markdown(f"#### {lic_name} - {money(q.get('total_monthly', 0.0))}/mo")
+                    for item in (q.get("items") or []):
+                        key = item.get("key", "")
+                        req = item.get("requested", 0)
+                        inc = item.get("included", 0)
+                        unit_price = item.get("unit_price", 0.0)
+                        line_total = item.get("line_total", 0.0)
+                        st.write(
+                            f"- {key}: requested {req}, included {inc}, unit {money(unit_price)}, add-ons {money(line_total)}/mo"
+                        )
+                    st.write("")
+
+            # Hide raw payload, do not dump it in the page
+            with st.expander("Debug: raw payload", expanded=False):
+                st.json(result)
+
         else:
+            # Forced license mode (single quote)
             quote_obj = result
-            st.subheader(f"Selected: {quote_obj.get('license', '(unknown)')}")
+            lic = quote_obj.get("license", "(unknown)")
+            st.subheader(f"Selected: {lic}")
 
-        total_monthly = quote_obj.get("total_monthly", 0.0)
-        total_annual = quote_obj.get("total_annual", 0.0)
-        lic_disc_pct = quote_obj.get("license_discount_pct", 0.0)
-        lic_disc_amt = quote_obj.get("license_discount_amount", 0.0)
+            render_quote_summary(quote_obj)
+            st.divider()
+            render_unit_costs_block(quote_obj)
 
-        st.write("**Total Monthly (USD)**")
-        st.write(f"### {money(total_monthly)}")
+            with st.expander("Line items", expanded=False):
+                for item in (quote_obj.get("items") or []):
+                    key = item.get("key", "")
+                    req = item.get("requested", 0)
+                    inc = item.get("included", 0)
+                    unit_price = item.get("unit_price", 0.0)
+                    line_total = item.get("line_total", 0.0)
+                    trail = item.get("progressive_breakdown", [])
 
-        st.write(f"License discount: {int(float(lic_disc_pct) * 100)}% -> {money(lic_disc_amt)}")
-        st.write("")
-        st.write("**Annual (USD)**")
-        st.write(f"### {money(total_annual)}")
+                    st.markdown(f"**{key}**")
+                    st.write(f"Requested: {req} | Included: {inc}")
+                    st.write(f"Unit price: {money(unit_price)}")
+                    st.write(f"Add-ons total: {money(line_total)}/mo")
 
-        st.divider()
+                    if trail:
+                        st.caption("Progressive breakdown")
+                        st.json(trail)
+                    st.write("")
 
-        # Unit costs (last unit)
-        st.subheader("Unit cost (last unit)")
-
-        fallback_unit_prices = normalize_unit_prices_from_quote(quote_obj)
-        items = quote_obj.get("items", [])
-
-        if not items:
-            st.info("No items returned.")
-        else:
-            lines = []
-            for item in items:
-                key = (item.get("key") or "").strip().lower()
-                unit_n = unit_number_label(item)
-                price = last_unit_list_price(item, fallback_unit_prices=fallback_unit_prices)
-
-                # This is the exact behavior you want:
-                # SMB with no add-ons still shows KPI #1 = 999, channels #1 = 199, etc.
-                lines.append(f"- {key} #{unit_n}: {money(price)}/mo")
-
-            st.markdown("\n".join(lines))
-
-        st.divider()
-
-        # Show details table
-        st.subheader("Line items")
-        for item in items:
-            key = item.get("key", "")
-            req = item.get("requested", 0)
-            inc = item.get("included", 0)
-            unit_price = item.get("unit_price", 0.0)
-            line_total = item.get("line_total", 0.0)
-
-            with st.expander(f"{key} (requested {req}, included {inc})"):
-                st.write(f"Unit price: {money(unit_price)}/unit")
-                st.write(f"Add-on total: {money(line_total)}/mo")
-
-                trail = item.get("progressive_breakdown", [])
-                if trail:
-                    st.write("Progressive breakdown")
-                    st.json(trail)
-                else:
-                    st.caption("No add-ons for this item (requested within included).")
-
-        st.divider()
-
-        st.subheader("Raw quote payload")
-        st.json(quote_obj)
-
+            with st.expander("Debug: raw payload", expanded=False):
+                st.json(quote_obj)
 
 with tab_sales:
     st.subheader("Sales assistant")
-    st.caption("Optional. Requires OPENAI_API_KEY in the environment. If missing, this will just show a friendly error.")
+    st.caption("Optional. Requires OPENAI_API_KEY in the environment.")
 
     prompt = st.text_area(
         "What do you want to say to the prospect?",
-        value="Write a short explanation of the quote and why this package fits.",
+        value="Write a short explanation of the quote and why this package fits. Keep it crisp.",
         height=120,
     )
 
@@ -314,7 +369,10 @@ with tab_sales:
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a crisp, helpful pricing sales assistant. Keep it short and practical."},
+                    {
+                        "role": "system",
+                        "content": "You are a crisp, helpful pricing sales assistant. Keep it short and practical.",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.4,
