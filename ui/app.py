@@ -7,7 +7,30 @@ import streamlit as st
 # Config
 # ----------------------------
 PRICER_API_URL = os.getenv("PRICER_API_URL", "http://localhost:8000").rstrip("/")
-APP_TITLE = os.getenv("PRICER_APP_TITLE", "Get a price quote")
+APP_TITLE = "Pini the Pricer"
+
+IMAGE_URL = "https://incrmntal-website.s3.amazonaws.com/Pinilogo_efa5df4e90.png?updated_at=2025-09-09T08:07:49.998Z"
+
+
+# ----------------------------
+# Header
+# ----------------------------
+def render_header():
+    user = st.session_state.get("user", {})
+
+    st.markdown(
+        f"""
+<div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0 8px 0;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <h1 style="margin:0;">{APP_TITLE}</h1>
+    <div style="font-size:0.9rem; opacity:0.8;">{user.get('email','')}</div>
+  </div>
+  <img src="{IMAGE_URL}" alt="INCRMNTAL" style="height:100px; max-height:100px; object-fit:contain;" />
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"API: {PRICER_API_URL}")
 
 
 # ----------------------------
@@ -54,8 +77,7 @@ def require_login():
     if st.session_state.get("authed"):
         return
 
-    st.title(APP_TITLE)
-    st.caption(f"API: {PRICER_API_URL}")
+    render_header()
 
     st.subheader("Sign in")
     entered = st.text_input("Access key", type="password")
@@ -96,16 +118,12 @@ def unit_number_label(item: dict) -> int:
 
 def last_unit_cost_display(item: dict) -> float:
     """
-    This matches your intent:
-
     - If there are no add-ons priced (requested <= included OR line_total == 0),
       show the base unit_price (from unit cost table).
 
     - If there ARE add-ons (requested > included AND line_total > 0),
       show the cost of the last add-on unit.
       Prefer progressive_breakdown if present, otherwise derive from line_total.
-
-    Example: requested 2, included 1, line_total 899 => last add-on unit is 899
     """
     requested = int(item.get("requested", 0) or 0)
     included = int(item.get("included", 0) or 0)
@@ -128,8 +146,6 @@ def last_unit_cost_display(item: dict) -> float:
     target_unit = max(1, requested)
     pb = item.get("progressive_breakdown")
 
-    # If breakdown exists, try to pick the exact unit's price-after-discount
-    # Backend shapes vary, so we try multiple keys.
     if isinstance(pb, list) and pb:
         for row in pb:
             if not isinstance(row, dict):
@@ -147,7 +163,6 @@ def last_unit_cost_display(item: dict) -> float:
                     if isinstance(v, (int, float)) and float(v) > 0:
                         return float(v)
 
-        # If no exact match, fallback to last row with a meaningful per-unit price
         last_row = pb[-1]
         if isinstance(last_row, dict):
             for k in ["price_after_discount", "net_unit_price", "addon_unit_price", "unit_price_after_discount"]:
@@ -155,7 +170,6 @@ def last_unit_cost_display(item: dict) -> float:
                 if isinstance(v, (int, float)) and float(v) > 0:
                     return float(v)
 
-    # Final fallback: average add-on unit cost
     addon_units = requested - included
     if addon_units > 0:
         return line_total / float(addon_units)
@@ -238,8 +252,7 @@ def render_all_licenses_table(result: dict, recommended: str):
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 require_login()
 
-st.title(APP_TITLE)
-st.caption(f"API: {PRICER_API_URL}")
+render_header()
 
 tab_quote, tab_sales = st.tabs(["Quote", "Sales assistant"])
 
