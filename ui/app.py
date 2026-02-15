@@ -14,10 +14,6 @@ APP_TITLE = os.getenv("PRICER_APP_TITLE", "Get a price quote")
 # Auth
 # ----------------------------
 def _get_access_key() -> str:
-    """
-    Supports multiple names so you can keep your existing Render env var.
-    Pick ONE in Render and you're good.
-    """
     candidates = [
         os.getenv("PRICER_ACCESS_KEY", ""),
         os.getenv("APP_ACCESS_KEY", ""),
@@ -28,7 +24,6 @@ def _get_access_key() -> str:
         if v and v.strip():
             return v.strip()
 
-    # Also allow Streamlit secrets if you're using those
     try:
         v = st.secrets.get("PRICER_ACCESS_KEY", "")  # type: ignore[attr-defined]
         if v and str(v).strip():
@@ -49,12 +44,10 @@ def _get_access_key() -> str:
 def require_login():
     access_key = _get_access_key()
 
-    # If no key is configured, we do NOT block (useful for local dev),
-    # but we show a loud warning because you said "open to the world" is bad.
     if not access_key:
         st.warning(
             "Auth is NOT configured. This app is publicly accessible.\n\n"
-            "Set one of these env vars in Render: PRICER_ACCESS_KEY, APP_ACCESS_KEY, APP_PASSWORD, STREAMLIT_PASSWORD."
+            "Set one of these secrets/env vars: PRICER_ACCESS_KEY, APP_ACCESS_KEY, APP_PASSWORD, STREAMLIT_PASSWORD."
         )
         return
 
@@ -96,53 +89,78 @@ def call_quote_api(payload: dict) -> dict:
     return r.json()
 
 
-def last_unit_list_price(item: dict) -> float:
-    """
-    Your original issue:
-    - When progressive_breakdown is empty (no add-ons), UI showed 0.
-    The correct "unit cost (last unit)" for packages with no add-ons is still the unit_price.
-
-    This function always returns item['unit_price'] when present and > 0.
-    Only falls back to progressive breakdown if needed.
-    """
-    v = item.get("unit_price")
-    if isinstance(v, (int, float)) and v > 0:
-        return float(v)
-
+def unit_number_label(item: dict) -> int:
     requested = int(item.get("requested", 0) or 0)
+    return max(1, requested)
+
+
+def last_unit_cost_display(item: dict) -> float:
+    """
+    This matches your intent:
+
+    - If there are no add-ons priced (requested <= included OR line_total == 0),
+      show the base unit_price (from unit cost table).
+
+    - If there ARE add-ons (requested > included AND line_total > 0),
+      show the cost of the last add-on unit.
+      Prefer progressive_breakdown if present, otherwise derive from line_total.
+
+    Example: requested 2, included 1, line_total 899 => last add-on unit is 899
+    """
+    requested = int(item.get("requested", 0) or 0)
+    included = int(item.get("included", 0) or 0)
+
+    base_unit = item.get("unit_price")
+    if not isinstance(base_unit, (int, float)):
+        base_unit = 0.0
+    base_unit = float(base_unit)
+
+    line_total = item.get("line_total", 0.0)
+    if not isinstance(line_total, (int, float)):
+        line_total = 0.0
+    line_total = float(line_total)
+
+    # No add-ons => show base unit
+    if requested <= included or line_total <= 0:
+        return base_unit if base_unit > 0 else 0.0
+
+    # Add-ons exist => show last add-on unit cost
     target_unit = max(1, requested)
     pb = item.get("progressive_breakdown")
 
-    # If breakdown exists, try to infer list unit price from it
-    # (your backend trail uses unit_price and price_after_discount)
+    # If breakdown exists, try to pick the exact unit's price-after-discount
+    # Backend shapes vary, so we try multiple keys.
     if isinstance(pb, list) and pb:
-        # If there is an entry for the target unit, use its unit_price if present
         for row in pb:
             if not isinstance(row, dict):
                 continue
-            unit_n = row.get("unit_number") or row.get("unit") or row.get("n")
+
+            unit_n = row.get("unit_number") or row.get("unit") or row.get("n") or row.get("index")
             try:
                 unit_n = int(unit_n)
             except Exception:
                 unit_n = None
-            if unit_n == target_unit:
-                uv = row.get("unit_price")
-                if isinstance(uv, (int, float)) and uv > 0:
-                    return float(uv)
 
-        # Otherwise use the last row's unit_price as best effort
+            if unit_n == target_unit:
+                for k in ["price_after_discount", "net_unit_price", "addon_unit_price", "unit_price_after_discount"]:
+                    v = row.get(k)
+                    if isinstance(v, (int, float)) and float(v) > 0:
+                        return float(v)
+
+        # If no exact match, fallback to last row with a meaningful per-unit price
         last_row = pb[-1]
         if isinstance(last_row, dict):
-            uv = last_row.get("unit_price")
-            if isinstance(uv, (int, float)) and uv > 0:
-                return float(uv)
+            for k in ["price_after_discount", "net_unit_price", "addon_unit_price", "unit_price_after_discount"]:
+                v = last_row.get(k)
+                if isinstance(v, (int, float)) and float(v) > 0:
+                    return float(v)
+
+    # Final fallback: average add-on unit cost
+    addon_units = requested - included
+    if addon_units > 0:
+        return line_total / float(addon_units)
 
     return 0.0
-
-
-def unit_number_label(item: dict) -> int:
-    requested = int(item.get("requested", 0) or 0)
-    return max(1, requested)
 
 
 def render_unit_costs_block(quote_obj: dict):
@@ -157,7 +175,7 @@ def render_unit_costs_block(quote_obj: dict):
     for item in items:
         key = (item.get("key") or "").strip().lower()
         unit_n = unit_number_label(item)
-        price = last_unit_list_price(item)
+        price = last_unit_cost_display(item)
         lines.append(f"- {key} #{unit_n}: {money(price)}/mo")
 
     st.markdown("\n".join(lines))
@@ -184,10 +202,6 @@ def render_quote_summary(quote_obj: dict):
 
 
 def render_all_licenses_table(result: dict, recommended: str):
-    """
-    Shows what you said you miss:
-    - totals for every license, not only the recommended one
-    """
     quotes = result.get("quotes", {}) or {}
     if not quotes:
         return
@@ -203,7 +217,6 @@ def render_all_licenses_table(result: dict, recommended: str):
             }
         )
 
-    # Sort by monthly ascending
     rows.sort(key=lambda r: float(r.get("Monthly", 0.0) or 0.0))
 
     st.subheader("All licenses")
@@ -216,7 +229,6 @@ def render_all_licenses_table(result: dict, recommended: str):
             r["Discount %"] = "0%"
 
     st.table(rows)
-
     st.caption(f"Recommended: {recommended}")
 
 
@@ -234,7 +246,6 @@ tab_quote, tab_sales = st.tabs(["Quote", "Sales assistant"])
 with tab_quote:
     st.subheader("Inputs")
 
-    # 4 equal columns fixes the alignment problem you showed
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         kpis = st.number_input("KPIs", min_value=0, value=1, step=1)
@@ -275,7 +286,6 @@ with tab_quote:
 
         st.divider()
 
-        # If API returns recommendation mode, show all licenses + the recommended license details
         if "recommended" in result and "quotes" in result:
             recommended = result.get("recommended", "")
             render_all_licenses_table(result, recommended)
@@ -293,7 +303,6 @@ with tab_quote:
             st.divider()
             render_unit_costs_block(quote_obj)
 
-            # Optional per-license breakdown (handy for sales)
             with st.expander("Compare line items by license", expanded=False):
                 quotes = result.get("quotes", {}) or {}
                 for lic_name, q in quotes.items():
@@ -309,12 +318,10 @@ with tab_quote:
                         )
                     st.write("")
 
-            # Hide raw payload, do not dump it in the page
             with st.expander("Debug: raw payload", expanded=False):
                 st.json(result)
 
         else:
-            # Forced license mode (single quote)
             quote_obj = result
             lic = quote_obj.get("license", "(unknown)")
             st.subheader(f"Selected: {lic}")
@@ -369,10 +376,7 @@ with tab_sales:
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a crisp, helpful pricing sales assistant. Keep it short and practical.",
-                    },
+                    {"role": "system", "content": "You are a crisp, helpful pricing sales assistant. Keep it short and practical."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.4,
