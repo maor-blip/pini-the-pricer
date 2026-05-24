@@ -1,4 +1,4 @@
-version: v8
+version: v9
 licenses:
   SMB:
     base_fee: 3999.0
@@ -8,10 +8,10 @@ licenses:
       countries: 1
       users: 1
     unit_prices:
-      kpis: 999.0
-      channels: 199.0
-      countries: 499.0
-      users: 99.0
+      kpis: 799.0
+      channels: 149.0
+      countries: 399.0
+      users: 69.0
   Pro:
     base_fee: 5999.0
     included:
@@ -32,27 +32,37 @@ licenses:
       countries: 10
       users: 10
     unit_prices:
-      kpis: 599.0
-      channels: 99.0
-      countries: 199.0
-      users: 49.0
-  Ultimate:
-    base_fee: 19999.0
-    included:
-      kpis: 1000000000
-      channels: 1000000000
-      countries: 1000000000
-      users: 1000000000
-    unit_prices:
-      kpis: 0.0
-      channels: 0.0
-      countries: 0.0
-      users: 0.0
+      kpis: 799.0
+      channels: 149.0
+      countries: 399.0
+      users: 69.0
+
 license_discounts:
   SMB: 0.0
   Pro: 0.05
   Enterprise: 0.13
-  Ultimate: 0.0
+
+# Additive percentage modifiers (in percentage points).
+# These stack additively, e.g. +30 + +30 + -20 = +40 -> multiplier 1.40.
+# monthly_report_fee is a flat USD amount added after license discount.
+modifiers:
+  analyst:
+    none: 0
+    included: 30
+  refresh:
+    weekly: 0
+    biweekly: 15
+    daily: 30
+  granularity:
+    channel: -20
+    channel_and_campaign: 0
+    campaign: 30
+  sales_channels:
+    1: -30
+    2: 0
+    3: 20
+    4: 30
+  monthly_report_fee: 500.0
 
 tiers:
   kpis:
