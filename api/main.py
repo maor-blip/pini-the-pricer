@@ -19,7 +19,7 @@ class QuoteInput(BaseModel):
     # granularity, where the baseline is intentionally "channel" (-20%).
     analyst: Literal["none", "included"] = "none"
     refresh: Literal["weekly", "biweekly", "daily"] = "weekly"
-    granularity: Literal["channel", "channel_and_campaign", "campaign"] = "channel"
+    granularity: Literal["channel", "channel_and_campaign"] = "channel"
     sales_channels: Literal[1, 2, 3, 4] = 2
     monthly_report: bool = False
 
