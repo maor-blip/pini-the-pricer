@@ -318,7 +318,7 @@ with tab_quote:
     with st.form("quote_form", clear_on_submit=False):
         st.subheader("Inputs")
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
             kpis = st.number_input("KPIs", min_value=0, value=1, step=1)
         with c2:
@@ -327,6 +327,13 @@ with tab_quote:
             countries = st.number_input("Countries", min_value=0, value=1, step=1)
         with c4:
             users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
+        with c5:
+            sales_channels = st.selectbox(
+                "Sales channels",
+                options=[1, 2, 3, 4],
+                index=1,
+                help="iOS / Web / Android / call center, etc. 1 = -30%, 2 = 0%, 3 = +20%, 4 = +30%.",
+            )
 
         st.markdown("---")
         st.markdown("**Modifiers**")
@@ -337,7 +344,7 @@ with tab_quote:
                 "Analyst access",
                 options=["none", "included"],
                 index=0,
-                help="Adds +30% to subtotal when included.",
+                help="Adds +20% to subtotal when included.",
             )
         with m2:
             refresh = st.selectbox(
@@ -354,15 +361,8 @@ with tab_quote:
                 help="channel only = -20% (default), channel + campaign = 0%.",
             )
 
-        m4, m5, _ = st.columns(3)
+        m4, _, _ = st.columns(3)
         with m4:
-            sales_channels = st.selectbox(
-                "Sales channels onboarded",
-                options=[1, 2, 3, 4],
-                index=1,
-                help="1 = -30%, 2 = 0%, 3 = +20%, 4 = +30%.",
-            )
-        with m5:
             monthly_report = st.checkbox(
                 "Monthly insights report (+$500/mo flat)",
                 value=False,
