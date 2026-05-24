@@ -1,4 +1,4 @@
-version: v10
+version: v11
 licenses:
   SMB:
     base_fee: 3999.0
@@ -48,7 +48,7 @@ license_discounts:
 modifiers:
   analyst:
     none: 0
-    included: 30
+    included: 20
   refresh:
     weekly: 0
     biweekly: 15
