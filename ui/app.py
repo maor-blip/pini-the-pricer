@@ -207,20 +207,47 @@ def render_modifier_block(quote_obj: dict):
     for item in breakdown:
         name = str(item.get("name", "")).replace("_", " ")
         choice = item.get("choice", "")
-        p = item.get("pct", 0.0) or 0.0
-        sign = "+" if p > 0 else ""
-        lines.append(f"- **{name}**: `{choice}` -> {sign}{int(round(p))}%")
+        raw_pct = item.get("pct", 0.0) or 0.0
+        eff_pct = item.get("effective_pct", raw_pct) or 0.0
+        weight = item.get("stack_weight", 1.0) or 1.0
+        rank = item.get("stack_rank")
+
+        if raw_pct == 0:
+            lines.append(f"- **{name}**: `{choice}` -> 0%")
+            continue
+
+        raw_sign = "+" if raw_pct > 0 else ""
+        if raw_pct > 0 and weight < 1.0 and rank:
+            eff_sign = "+" if eff_pct > 0 else ""
+            lines.append(
+                f"- **{name}**: `{choice}` -> {raw_sign}{int(round(raw_pct))}% "
+                f"-> stack #{rank} at {int(round(weight*100))}% = "
+                f"{eff_sign}{eff_pct:.2f}%"
+            )
+        else:
+            lines.append(f"- **{name}**: `{choice}` -> {raw_sign}{int(round(raw_pct))}%")
 
     if lines:
         st.markdown("\n".join(lines))
 
+    raw_total = mods.get("raw_total_pct", 0.0) or 0.0
     additive = mods.get("additive_total_pct", 0.0) or 0.0
     multiplier = mods.get("multiplier", 1.0) or 1.0
-    sign = "+" if additive > 0 else ""
-    st.write(
-        f"Combined modifier: {sign}{int(round(additive))}% "
-        f"(×{multiplier:.2f}) on subtotal"
-    )
+
+    raw_sign = "+" if raw_total > 0 else ""
+    eff_sign = "+" if additive > 0 else ""
+
+    if abs(raw_total - additive) > 0.01:
+        st.write(
+            f"Raw stack: {raw_sign}{raw_total:.0f}%  ·  "
+            f"After stack discount: {eff_sign}{additive:.2f}% "
+            f"(×{multiplier:.3f}) on subtotal"
+        )
+    else:
+        st.write(
+            f"Combined modifier: {eff_sign}{additive:.0f}% "
+            f"(×{multiplier:.2f}) on subtotal"
+        )
 
     if mods.get("monthly_report_enabled"):
         st.write(f"Monthly report: +{money(mods.get('monthly_report_fee', 0.0))}/mo (flat)")
@@ -288,65 +315,74 @@ render_header()
 tab_quote, tab_sales = st.tabs(["Quote", "Sales assistant"])
 
 with tab_quote:
-    st.subheader("Inputs")
+    with st.form("quote_form", clear_on_submit=False):
+        st.subheader("Inputs")
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kpis = st.number_input("KPIs", min_value=0, value=1, step=1)
-    with c2:
-        channels = st.number_input("Paid media channels", min_value=0, value=1, step=1)
-    with c3:
-        countries = st.number_input("Countries", min_value=0, value=1, step=1)
-    with c4:
-        users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            kpis = st.number_input("KPIs", min_value=0, value=1, step=1)
+        with c2:
+            channels = st.number_input("Paid media channels", min_value=0, value=1, step=1)
+        with c3:
+            countries = st.number_input("Countries", min_value=0, value=1, step=1)
+        with c4:
+            users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
 
-    st.markdown("---")
-    st.markdown("**Modifiers**")
+        st.markdown("---")
+        st.markdown("**Modifiers**")
 
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        analyst = st.selectbox(
-            "Analyst access",
-            options=["none", "included"],
-            index=0,
-            help="Adds +30% to subtotal when included.",
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            analyst = st.selectbox(
+                "Analyst access",
+                options=["none", "included"],
+                index=0,
+                help="Adds +30% to subtotal when included.",
+            )
+        with m2:
+            refresh = st.selectbox(
+                "Model refresh cadence",
+                options=["weekly", "biweekly", "daily"],
+                index=0,
+                help="weekly = 0%, biweekly = +15%, daily = +30%.",
+            )
+        with m3:
+            granularity = st.selectbox(
+                "Insight granularity",
+                options=["channel", "channel_and_campaign"],
+                index=0,
+                help="channel only = -20% (default), channel + campaign = 0%.",
+            )
+
+        m4, m5, _ = st.columns(3)
+        with m4:
+            sales_channels = st.selectbox(
+                "Sales channels onboarded",
+                options=[1, 2, 3, 4],
+                index=1,
+                help="1 = -30%, 2 = 0%, 3 = +20%, 4 = +30%.",
+            )
+        with m5:
+            monthly_report = st.checkbox(
+                "Monthly insights report (+$500/mo flat)",
+                value=False,
+            )
+
+        st.caption(
+            "Stack discount: positive modifiers cascade — 1st at 100%, 2nd at 75%, "
+            "3rd at 50%, 4th at 25%. Negatives always apply at 100%."
         )
-    with m2:
-        refresh = st.selectbox(
-            "Model refresh cadence",
-            options=["weekly", "biweekly", "daily"],
-            index=0,
-            help="weekly = 0%, biweekly = +15%, daily = +30%.",
-        )
-    with m3:
-        granularity = st.selectbox(
-            "Insight granularity",
-            options=["channel", "channel_and_campaign", "campaign"],
-            index=0,
-            help="channel only = -20%, channel + campaign = 0%, campaign only = +30%.",
-        )
 
-    m4, m5, _ = st.columns(3)
-    with m4:
-        sales_channels = st.selectbox(
-            "Sales channels onboarded",
-            options=[1, 2, 3, 4],
-            index=1,
-            help="1 = -30%, 2 = 0%, 3 = +20%, 4 = +30%.",
-        )
-    with m5:
-        monthly_report = st.checkbox(
-            "Monthly insights report (+$500/mo flat)",
-            value=False,
-        )
+        st.write("")
+        force_license = st.text_input("Force license (optional)", value="(auto)")
 
-    st.write("")
-    force_license = st.text_input("Force license (optional)", value="(auto)")
-    force_license_clean = force_license.strip()
-    if force_license_clean == "(auto)" or force_license_clean == "":
-        force_license_clean = None
+        submitted = st.form_submit_button("Get quote")
 
-    if st.button("Get quote"):
+    if submitted:
+        force_license_clean = force_license.strip()
+        if force_license_clean == "(auto)" or force_license_clean == "":
+            force_license_clean = None
+
         payload = {
             "license": force_license_clean,
             "kpis": int(kpis),
