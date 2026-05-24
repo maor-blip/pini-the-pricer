@@ -104,6 +104,16 @@ def money(x: float) -> str:
         return "$0"
 
 
+def pct(x: float, decimals: int = 0) -> str:
+    try:
+        v = float(x)
+        if decimals == 0:
+            return f"{int(round(v))}%"
+        return f"{v:.{decimals}f}%"
+    except Exception:
+        return "0%"
+
+
 def call_quote_api(payload: dict) -> dict:
     url = f"{PRICER_API_URL}/quote"
     r = requests.post(url, json=payload, timeout=30)
@@ -117,14 +127,6 @@ def unit_number_label(item: dict) -> int:
 
 
 def last_unit_cost_display(item: dict) -> float:
-    """
-    - If there are no add-ons priced (requested <= included OR line_total == 0),
-      show the base unit_price (from unit cost table).
-
-    - If there ARE add-ons (requested > included AND line_total > 0),
-      show the cost of the last add-on unit.
-      Prefer progressive_breakdown if present, otherwise derive from line_total.
-    """
     requested = int(item.get("requested", 0) or 0)
     included = int(item.get("included", 0) or 0)
 
@@ -138,11 +140,9 @@ def last_unit_cost_display(item: dict) -> float:
         line_total = 0.0
     line_total = float(line_total)
 
-    # No add-ons => show base unit
     if requested <= included or line_total <= 0:
         return base_unit if base_unit > 0 else 0.0
 
-    # Add-ons exist => show last add-on unit cost
     target_unit = max(1, requested)
     pb = item.get("progressive_breakdown")
 
@@ -195,6 +195,37 @@ def render_unit_costs_block(quote_obj: dict):
     st.markdown("\n".join(lines))
 
 
+def render_modifier_block(quote_obj: dict):
+    mods = quote_obj.get("modifiers") or {}
+    if not mods:
+        return
+
+    st.subheader("Modifiers")
+
+    breakdown = mods.get("breakdown") or []
+    lines = []
+    for item in breakdown:
+        name = str(item.get("name", "")).replace("_", " ")
+        choice = item.get("choice", "")
+        p = item.get("pct", 0.0) or 0.0
+        sign = "+" if p > 0 else ""
+        lines.append(f"- **{name}**: `{choice}` -> {sign}{int(round(p))}%")
+
+    if lines:
+        st.markdown("\n".join(lines))
+
+    additive = mods.get("additive_total_pct", 0.0) or 0.0
+    multiplier = mods.get("multiplier", 1.0) or 1.0
+    sign = "+" if additive > 0 else ""
+    st.write(
+        f"Combined modifier: {sign}{int(round(additive))}% "
+        f"(×{multiplier:.2f}) on subtotal"
+    )
+
+    if mods.get("monthly_report_enabled"):
+        st.write(f"Monthly report: +{money(mods.get('monthly_report_fee', 0.0))}/mo (flat)")
+
+
 def render_quote_summary(quote_obj: dict):
     total_monthly = quote_obj.get("total_monthly", 0.0)
     total_annual = quote_obj.get("total_annual", 0.0)
@@ -205,11 +236,11 @@ def render_quote_summary(quote_obj: dict):
     st.write(f"### {money(total_monthly)}")
 
     try:
-        pct = int(float(lic_disc_pct) * 100)
+        pct_int = int(float(lic_disc_pct) * 100)
     except Exception:
-        pct = 0
+        pct_int = 0
 
-    st.write(f"License discount: {pct}% -> {money(lic_disc_amt)}")
+    st.write(f"License discount: {pct_int}% -> {money(lic_disc_amt)}")
     st.write("")
     st.write("**Annual (USD)**")
     st.write(f"### {money(total_annual)}")
@@ -263,11 +294,51 @@ with tab_quote:
     with c1:
         kpis = st.number_input("KPIs", min_value=0, value=1, step=1)
     with c2:
-        channels = st.number_input("Channels", min_value=0, value=1, step=1)
+        channels = st.number_input("Paid media channels", min_value=0, value=1, step=1)
     with c3:
         countries = st.number_input("Countries", min_value=0, value=1, step=1)
     with c4:
         users = st.number_input("Users (Admins)", min_value=0, value=1, step=1)
+
+    st.markdown("---")
+    st.markdown("**Modifiers**")
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        analyst = st.selectbox(
+            "Analyst access",
+            options=["none", "included"],
+            index=0,
+            help="Adds +30% to subtotal when included.",
+        )
+    with m2:
+        refresh = st.selectbox(
+            "Model refresh cadence",
+            options=["weekly", "biweekly", "daily"],
+            index=0,
+            help="weekly = 0%, biweekly = +15%, daily = +30%.",
+        )
+    with m3:
+        granularity = st.selectbox(
+            "Insight granularity",
+            options=["channel", "channel_and_campaign", "campaign"],
+            index=0,
+            help="channel only = -20%, channel + campaign = 0%, campaign only = +30%.",
+        )
+
+    m4, m5, _ = st.columns(3)
+    with m4:
+        sales_channels = st.selectbox(
+            "Sales channels onboarded",
+            options=[1, 2, 3, 4],
+            index=1,
+            help="1 = -30%, 2 = 0%, 3 = +20%, 4 = +30%.",
+        )
+    with m5:
+        monthly_report = st.checkbox(
+            "Monthly insights report (+$500/mo flat)",
+            value=False,
+        )
 
     st.write("")
     force_license = st.text_input("Force license (optional)", value="(auto)")
@@ -282,6 +353,11 @@ with tab_quote:
             "channels": int(channels),
             "countries": int(countries),
             "users": int(users),
+            "analyst": analyst,
+            "refresh": refresh,
+            "granularity": granularity,
+            "sales_channels": int(sales_channels),
+            "monthly_report": bool(monthly_report),
         }
 
         try:
@@ -314,6 +390,8 @@ with tab_quote:
             st.subheader(f"Recommended license details: {recommended}")
             render_quote_summary(quote_obj)
             st.divider()
+            render_modifier_block(quote_obj)
+            st.divider()
             render_unit_costs_block(quote_obj)
 
             with st.expander("Compare line items by license", expanded=False):
@@ -340,6 +418,8 @@ with tab_quote:
             st.subheader(f"Selected: {lic}")
 
             render_quote_summary(quote_obj)
+            st.divider()
+            render_modifier_block(quote_obj)
             st.divider()
             render_unit_costs_block(quote_obj)
 
