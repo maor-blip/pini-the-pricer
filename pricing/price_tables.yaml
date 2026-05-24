@@ -1,4 +1,4 @@
-version: v9
+version: v10
 licenses:
   SMB:
     base_fee: 3999.0
@@ -56,7 +56,6 @@ modifiers:
   granularity:
     channel: -20
     channel_and_campaign: 0
-    campaign: 30
   sales_channels:
     1: -30
     2: 0
